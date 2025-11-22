@@ -21,6 +21,11 @@ define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
 
+// Load Composer autoloader
+if (file_exists(ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'vendor/autoload.php')) {
+    require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'vendor/autoload.php';
+}
+
 // Main plugin class
 class AlumniBulkEmail {
     
@@ -327,10 +332,10 @@ class AlumniBulkEmail {
                                     </div>
                                     
                                     <div id="upload_csv_section" style="display: none;">
-                                        <input type="file" id="csv_file" name="csv_file" accept=".csv" />
+                                        <input type="file" id="csv_file" name="csv_file" accept=".csv,.xlsx,.xls" />
                                         <input type="text" id="new_list_name" name="new_list_name" placeholder="List name (e.g., 'Alumni News 11-22-2024')" style="width: 300px; margin-left: 10px;" />
                                         <p class="description">
-                                            CSV with columns: <strong>email</strong> (required), name, first_name, last_name<br>
+                                            CSV/Excel with columns: <strong>email</strong> (required), name, first_name, last_name<br>
                                             <button type="button" id="preview_csv" class="button button-small" style="margin-top: 5px;">Preview & Save List</button>
                                         </p>
                                     </div>
@@ -1556,7 +1561,7 @@ class AlumniBulkEmail {
         }
         
         $file = $_FILES['csv_file']['tmp_name'];
-        $recipients = $this->parse_csv_file($file);
+        $recipients = $this->parse_file($file, null);
         
         if (empty($recipients)) {
             echo json_encode(array('success' => false, 'data' => array('message' => 'No valid email addresses found in CSV')));
@@ -1665,7 +1670,7 @@ class AlumniBulkEmail {
                 exit;
             }
             
-            $recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+            $recipients = $this->parse_file($_FILES['csv_file']['tmp_name'], null);
             if (empty($recipients)) {
                 echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients in CSV')));
                 exit;
@@ -1834,6 +1839,109 @@ class AlumniBulkEmail {
         }
         
         return $recipients;
+    }
+    
+    private function parse_excel_file($file_path) {
+        $recipients = array();
+        
+        try {
+            if (!class_exists('\PhpOffice\PhpSpreadsheet\IOFactory')) {
+                error_log('Alumni Bulk Email - PHPSpreadsheet not available');
+                throw new Exception('Excel processing library not available');
+            }
+            
+            // Load the Excel file
+            $spreadsheet = \PhpOffice\PhpSpreadsheet\IOFactory::load($file_path);
+            $worksheet = $spreadsheet->getActiveSheet();
+            $rows = $worksheet->toArray();
+            
+            if (empty($rows)) {
+                error_log('Alumni Bulk Email - Excel file is empty');
+                return $recipients;
+            }
+            
+            // First row is the header
+            $header = array_shift($rows);
+            if (!$header) {
+                error_log('Alumni Bulk Email - Excel file has no header');
+                return $recipients;
+            }
+            
+            // Debug logging
+            error_log('Alumni Bulk Email - Excel Header: ' . print_r($header, true));
+            
+            // Clean up header names - just store all columns as-is
+            $cleaned_headers = array();
+            foreach ($header as $index => $column) {
+                $cleaned_header = trim($column);
+                $cleaned_headers[$index] = $cleaned_header;
+            }
+            
+            error_log('Alumni Bulk Email - Excel columns detected: ' . print_r($cleaned_headers, true));
+            
+            $row_count = 0;
+            $valid_recipients = 0;
+            
+            foreach ($rows as $data) {
+                $row_count++;
+                
+                // Debug log each row
+                error_log('Alumni Bulk Email - Excel Row ' . $row_count . ': ' . print_r($data, true));
+                
+                // Allow rows with fewer columns - they might just have empty trailing fields
+                if (empty($data) || (count($data) == 1 && trim($data[0]) == '')) {
+                    // Skip completely empty rows
+                    error_log('Alumni Bulk Email - Skipping empty Excel row ' . $row_count);
+                    continue;
+                }
+                
+                // Store all rows regardless of email validation
+                $valid_recipients++;
+                $recipient = array();
+                
+                // Store all columns dynamically
+                foreach ($cleaned_headers as $index => $column_name) {
+                    $value = isset($data[$index]) ? trim((string)$data[$index]) : '';
+                    $recipient[$column_name] = $value;
+                }
+                
+                // Add tags column (initially empty for all recipients)
+                $recipient['tags'] = '';
+                
+                // Generate standard fields for backward compatibility (only if we can extract them)
+                $recipient['name'] = $this->extract_name_field($recipient);
+                $recipient['first_name'] = $this->extract_first_name($recipient);
+                $recipient['last_name'] = $this->extract_last_name($recipient);
+                
+                $recipients[] = $recipient;
+            }
+            
+            error_log('Alumni Bulk Email - Excel parsing complete. Total rows: ' . $row_count . ', Valid recipients: ' . $valid_recipients);
+            
+        } catch (Exception $e) {
+            error_log('Alumni Bulk Email - Excel parsing error: ' . $e->getMessage());
+            throw $e;
+        }
+        
+        return $recipients;
+    }
+    
+    private function parse_file($file_path, $file_type) {
+        // Determine file type if not provided
+        if (!$file_type) {
+            $extension = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
+            if (in_array($extension, ['xlsx', 'xls'])) {
+                $file_type = 'excel';
+            } else {
+                $file_type = 'csv';
+            }
+        }
+        
+        if ($file_type === 'excel') {
+            return $this->parse_excel_file($file_path);
+        } else {
+            return $this->parse_csv_file($file_path);
+        }
     }
     
     private function add_campaign_tags_to_list($list_id, $campaign_name, $date) {
@@ -2406,7 +2514,7 @@ class AlumniBulkEmail {
         }
         
         // Parse CSV
-        $recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+        $recipients = $this->parse_file($_FILES['csv_file']['tmp_name'], null);
         
         if (empty($recipients)) {
             echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients found in CSV')));
@@ -2466,7 +2574,7 @@ class AlumniBulkEmail {
                 exit;
             }
             
-            $recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+            $recipients = $this->parse_file($_FILES['csv_file']['tmp_name'], null);
         } else {
             // Handle manual entry
             $manual_data = sanitize_textarea_field($_POST['manual_data']);
@@ -2987,7 +3095,7 @@ class AlumniBulkEmail {
         }
         
         // Parse the new CSV
-        $new_recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+        $new_recipients = $this->parse_file($_FILES['csv_file']['tmp_name'], null);
         if (empty($new_recipients)) {
             echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients found in CSV')));
             exit;
@@ -3055,6 +3163,7 @@ class AlumniBulkEmail {
         $list_id = intval($_POST['list_id']);
         $exclude_bounced = $_POST['exclude_bounced'] === '1';
         $exclude_unsubscribed = $_POST['exclude_unsubscribed'] === '1';
+        $export_format = isset($_POST['export_format']) ? $_POST['export_format'] : 'csv';
         
         if (!$list_id) {
             wp_die('Invalid list ID', 'Error', array('response' => 400));
@@ -3082,24 +3191,48 @@ class AlumniBulkEmail {
             wp_die('No recipients remain after applying filters', 'Error', array('response' => 404));
         }
         
-        // Generate CSV content
-        $csv_content = $this->generate_csv_content($filtered_recipients);
-        
         // Prepare filename
         $safe_list_name = sanitize_file_name($list->list_name);
         $timestamp = current_time('Y-m-d_H-i-s');
-        $filename = $safe_list_name . '_export_' . $timestamp . '.csv';
         
-        // Set headers for download
-        header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename="' . $filename . '"');
-        header('Cache-Control: no-cache, no-store, must-revalidate');
-        header('Pragma: no-cache');
-        header('Expires: 0');
-        
-        // Output CSV content
-        echo $csv_content;
-        exit;
+        if ($export_format === 'excel') {
+            $filename = $safe_list_name . '_export_' . $timestamp . '.xlsx';
+            
+            // Generate Excel content
+            try {
+                $excel_content = $this->generate_excel_content($filtered_recipients);
+                
+                // Set headers for Excel download
+                header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+                header('Content-Disposition: attachment; filename="' . $filename . '"');
+                header('Cache-Control: no-cache, no-store, must-revalidate');
+                header('Pragma: no-cache');
+                header('Expires: 0');
+                
+                // Output Excel content
+                echo $excel_content;
+                exit;
+                
+            } catch (Exception $e) {
+                wp_die('Error generating Excel file: ' . $e->getMessage(), 'Error', array('response' => 500));
+            }
+        } else {
+            $filename = $safe_list_name . '_export_' . $timestamp . '.csv';
+            
+            // Generate CSV content
+            $csv_content = $this->generate_csv_content($filtered_recipients);
+            
+            // Set headers for CSV download
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="' . $filename . '"');
+            header('Cache-Control: no-cache, no-store, must-revalidate');
+            header('Pragma: no-cache');
+            header('Expires: 0');
+            
+            // Output CSV content
+            echo $csv_content;
+            exit;
+        }
     }
     
     private function filter_recipients_for_export($recipients, $exclude_bounced, $exclude_unsubscribed) {
@@ -3155,6 +3288,71 @@ class AlumniBulkEmail {
         fclose($output);
         
         return $csv_content;
+    }
+    
+    private function generate_excel_content($recipients) {
+        if (empty($recipients)) {
+            return '';
+        }
+        
+        try {
+            if (!class_exists('\PhpOffice\PhpSpreadsheet\Spreadsheet')) {
+                throw new Exception('PHPSpreadsheet library not available');
+            }
+            
+            // Create new spreadsheet
+            $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+            $worksheet = $spreadsheet->getActiveSheet();
+            
+            // Get all column headers from the first recipient
+            $headers = array_keys($recipients[0]);
+            
+            // Write headers
+            $col = 1;
+            foreach ($headers as $header) {
+                $worksheet->setCellValueByColumnAndRow($col, 1, $header);
+                $col++;
+            }
+            
+            // Style the header row
+            $headerRange = 'A1:' . \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(count($headers)) . '1';
+            $worksheet->getStyle($headerRange)->getFont()->setBold(true);
+            $worksheet->getStyle($headerRange)->getFill()
+                ->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                ->getStartColor()->setRGB('E0E0E0');
+            
+            // Write data rows
+            $row = 2;
+            foreach ($recipients as $recipient) {
+                $col = 1;
+                foreach ($headers as $header) {
+                    $value = isset($recipient[$header]) ? $recipient[$header] : '';
+                    $worksheet->setCellValueByColumnAndRow($col, $row, $value);
+                    $col++;
+                }
+                $row++;
+            }
+            
+            // Auto-size columns
+            foreach (range(1, count($headers)) as $columnID) {
+                $columnLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($columnID);
+                $worksheet->getColumnDimension($columnLetter)->setAutoSize(true);
+            }
+            
+            // Create writer and generate content
+            $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+            
+            // Capture output
+            ob_start();
+            $writer->save('php://output');
+            $excel_content = ob_get_contents();
+            ob_end_clean();
+            
+            return $excel_content;
+            
+        } catch (Exception $e) {
+            throw new Exception('Excel generation failed: ' . $e->getMessage());
+        }
     }
     
     public function handle_create_sublist_from_results() {
@@ -3645,7 +3843,7 @@ class AlumniBulkEmail {
                                 <td>
                                     <button class="button view-list" data-list-id="<?php echo $list->id; ?>">View</button>
                                     <button class="button add-to-list" data-list-id="<?php echo $list->id; ?>" data-list-name="<?php echo esc_attr($list->list_name); ?>">Add to List</button>
-                                    <button class="button export-list" data-list-id="<?php echo $list->id; ?>" data-list-name="<?php echo esc_attr($list->list_name); ?>">Export CSV</button>
+                                    <button class="button export-list" data-list-id="<?php echo $list->id; ?>" data-list-name="<?php echo esc_attr($list->list_name); ?>">Export</button>
                                     <button class="button edit-list-name" data-list-id="<?php echo $list->id; ?>" data-current-name="<?php echo esc_attr($list->list_name); ?>">Rename</button>
                                     <button class="button button-link-delete delete-list" data-list-id="<?php echo $list->id; ?>">Delete</button>
                                 </td>
@@ -3810,8 +4008,8 @@ class AlumniBulkEmail {
                     
                     '<div id="upload-section">' +
                     '<label for="csv-upload" style="font-weight: bold;">CSV File:</label><br>' +
-                    '<input type="file" id="csv-upload" accept=".csv" style="margin-top: 5px;" />' +
-                    '<p style="margin-top: 10px; font-size: 14px; color: #666;">CSV should have columns: <strong>email</strong> (required), name, first_name, last_name</p>' +
+                    '<input type="file" id="csv-upload" accept=".csv,.xlsx,.xls" style="margin-top: 5px;" />' +
+                    '<p style="margin-top: 10px; font-size: 14px; color: #666;">CSV/Excel should have columns: <strong>email</strong> (required), name, first_name, last_name</p>' +
                     '</div>' +
                     
                     '<div id="manual-section" style="display: none;">' +
@@ -4723,8 +4921,8 @@ class AlumniBulkEmail {
                     '<input type="hidden" id="target-list-id" value="' + listId + '" />' +
                     '<div style="margin-bottom: 15px;">' +
                     '<label for="merge-csv-file" style="display: block; font-weight: bold; margin-bottom: 5px;">Upload CSV File:</label>' +
-                    '<input type="file" id="merge-csv-file" name="csv_file" accept=".csv" required style="width: 100%;" />' +
-                    '<p class="description" style="margin-top: 5px;">CSV will be merged with existing list. Duplicates will be removed based on email addresses.</p>' +
+                    '<input type="file" id="merge-csv-file" name="csv_file" accept=".csv,.xlsx,.xls" required style="width: 100%;" />' +
+                    '<p class="description" style="margin-top: 5px;">CSV/Excel will be merged with existing list. Duplicates will be removed based on email addresses.</p>' +
                     '</div>' +
                     '<div style="margin-bottom: 15px;">' +
                     '<label>' +
@@ -4843,7 +5041,7 @@ class AlumniBulkEmail {
                 var modalHtml = '<div id="export-list-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000;">' +
                     '<div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 25px; border-radius: 8px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">' +
                     '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #ddd; padding-bottom: 15px;">' +
-                    '<h3 style="margin: 0;">📥 Export "' + listName + '" as CSV</h3>' +
+                    '<h3 style="margin: 0;">📥 Export "' + listName + '"</h3>' +
                     '<button type="button" id="close-export-modal" class="button">Cancel</button>' +
                     '</div>' +
                     '<form id="export-list-form">' +
@@ -4867,11 +5065,19 @@ class AlumniBulkEmail {
                     
                     '<div style="margin-bottom: 15px; padding: 15px; background: #f9f9f9; border-radius: 4px;">' +
                     '<h4 style="margin: 0 0 10px 0;">File Format:</h4>' +
-                    '<p style="margin: 0; font-size: 12px; color: #666;">CSV file will include all columns from the original import plus any tags that have been added.</p>' +
+                    '<div style="margin-bottom: 10px;">' +
+                    '<label style="display: block; margin-bottom: 5px;">' +
+                    '<input type="radio" name="export_format" value="csv" checked /> CSV Format (.csv)' +
+                    '</label>' +
+                    '<label style="display: block; margin-bottom: 5px;">' +
+                    '<input type="radio" name="export_format" value="excel" /> Excel Format (.xlsx)' +
+                    '</label>' +
+                    '</div>' +
+                    '<p style="margin: 0; font-size: 12px; color: #666;">File will include all columns from the original import plus any tags that have been added.</p>' +
                     '</div>' +
                     
                     '<div style="margin-top: 20px; text-align: right; border-top: 1px solid #ddd; padding-top: 15px;">' +
-                    '<button type="button" id="start-export" class="button button-primary">Export CSV</button> ' +
+                    '<button type="button" id="start-export" class="button button-primary">Export</button> ' +
                     '<button type="button" id="cancel-export" class="button">Cancel</button>' +
                     '</div>' +
                     '</form>' +
@@ -4894,6 +5100,7 @@ class AlumniBulkEmail {
                 var listId = $('#export-list-id').val();
                 var excludeBounced = $('#exclude-bounced').is(':checked');
                 var excludeUnsubscribed = $('#exclude-unsubscribed').is(':checked');
+                var exportFormat = $('input[name="export_format"]:checked').val();
                 
                 var button = $('#start-export');
                 button.prop('disabled', true).text('Preparing export...');
@@ -4908,7 +5115,8 @@ class AlumniBulkEmail {
                     $('<input>', {'type': 'hidden', 'name': 'nonce', 'value': '<?php echo wp_create_nonce('export_recipient_list'); ?>'}),
                     $('<input>', {'type': 'hidden', 'name': 'list_id', 'value': listId}),
                     $('<input>', {'type': 'hidden', 'name': 'exclude_bounced', 'value': excludeBounced ? '1' : '0'}),
-                    $('<input>', {'type': 'hidden', 'name': 'exclude_unsubscribed', 'value': excludeUnsubscribed ? '1' : '0'})
+                    $('<input>', {'type': 'hidden', 'name': 'exclude_unsubscribed', 'value': excludeUnsubscribed ? '1' : '0'}),
+                    $('<input>', {'type': 'hidden', 'name': 'export_format', 'value': exportFormat})
                 );
                 
                 $('body').append(form);

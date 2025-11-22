@@ -10,7 +10,8 @@
         }
     ],
     "require": {
-        "yahnis-elsts/plugin-update-checker": "^5.0"
+        "yahnis-elsts/plugin-update-checker": "^5.0",
+        "phpoffice/phpspreadsheet": "^1.29"
     },
     "autoload": {
         "psr-4": {
