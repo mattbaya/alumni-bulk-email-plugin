@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 1.1.1
+ * Version: 1.2.0
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '1.1.0');
+define('ALUMNI_BULK_EMAIL_VERSION', '1.2.0');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -27,6 +27,8 @@ class AlumniBulkEmail {
         add_action('init', array($this, 'init'));
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('wp_ajax_send_test_email', array($this, 'handle_test_email'));
+        add_action('wp_ajax_send_bulk_email', array($this, 'handle_bulk_email'));
+        add_action('wp_ajax_upload_csv', array($this, 'handle_csv_upload'));
         
         // Create tables on activation
         register_activation_hook(__FILE__, array($this, 'create_tables'));
@@ -42,19 +44,46 @@ class AlumniBulkEmail {
         
         $charset_collate = $wpdb->get_charset_collate();
         
-        // Email lists table
-        $table_name = $wpdb->prefix . 'alumni_email_lists';
-        $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+        // Email campaigns table
+        $table_campaigns = $wpdb->prefix . 'alumni_email_campaigns';
+        $sql_campaigns = "CREATE TABLE IF NOT EXISTS $table_campaigns (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
-            list_name varchar(255) NOT NULL,
-            description text,
-            total_subscribers int DEFAULT 0,
+            campaign_name varchar(255) NOT NULL,
+            subject varchar(500) NOT NULL,
+            html_content longtext NOT NULL,
+            recipients_count int DEFAULT 0,
+            sent_count int DEFAULT 0,
+            bounce_count int DEFAULT 0,
+            open_count int DEFAULT 0,
+            click_count int DEFAULT 0,
+            status varchar(50) DEFAULT 'draft',
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            sent_at datetime,
             PRIMARY KEY (id)
         ) $charset_collate;";
         
+        // Email logs table  
+        $table_logs = $wpdb->prefix . 'alumni_email_logs';
+        $sql_logs = "CREATE TABLE IF NOT EXISTS $table_logs (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            campaign_id mediumint(9) NOT NULL,
+            recipient_email varchar(255) NOT NULL,
+            recipient_name varchar(255),
+            status varchar(50) DEFAULT 'pending',
+            sent_at datetime,
+            opened_at datetime,
+            clicked_at datetime,
+            bounce_reason varchar(500),
+            mailgun_message_id varchar(255),
+            PRIMARY KEY (id),
+            KEY campaign_id (campaign_id),
+            KEY recipient_email (recipient_email),
+            KEY status (status)
+        ) $charset_collate;";
+        
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-        dbDelta($sql);
+        dbDelta($sql_campaigns);
+        dbDelta($sql_logs);
         
         // Set default options
         add_option('alumni_mailgun_api_key', '');
@@ -85,25 +114,322 @@ class AlumniBulkEmail {
     }
     
     public function admin_page() {
+        // Check if Mailgun is configured
+        if (!$this->is_mailgun_configured()) {
+            ?>
+            <div class="wrap">
+                <h1>Alumni Bulk Email</h1>
+                
+                <div class="notice notice-error">
+                    <p>⚠️ <strong>Mailgun not configured!</strong> Please <a href="<?php echo admin_url('admin.php?page=alumni-bulk-email-settings'); ?>">configure your Mailgun settings</a> before sending emails.</p>
+                </div>
+            </div>
+            <?php
+            return;
+        }
+        
+        // Get recent campaigns for display
+        global $wpdb;
+        $recent_campaigns = $wpdb->get_results("
+            SELECT * FROM {$wpdb->prefix}alumni_email_campaigns 
+            ORDER BY created_at DESC 
+            LIMIT 5
+        ");
         ?>
         <div class="wrap">
             <h1>Alumni Bulk Email</h1>
             
-            <div class="notice notice-info">
-                <p>Welcome to Alumni Bulk Email! Please configure your <a href="<?php echo admin_url('admin.php?page=alumni-bulk-email-settings'); ?>">Mailgun settings</a> to get started.</p>
+            <!-- Create New Campaign -->
+            <div class="postbox" style="margin: 20px 0;">
+                <h2 class="hndle">📧 Send New Email Campaign</h2>
+                <div class="inside">
+                    <form id="bulk-email-form" enctype="multipart/form-data">
+                        <table class="form-table">
+                            <tr>
+                                <th scope="row">
+                                    <label for="campaign_name">Campaign Name</label>
+                                </th>
+                                <td>
+                                    <input type="text" id="campaign_name" name="campaign_name" class="regular-text" required 
+                                           placeholder="e.g., Spring 2025 Newsletter" />
+                                    <p class="description">Give your campaign a memorable name for tracking</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row">
+                                    <label for="csv_file">Recipients CSV File</label>
+                                </th>
+                                <td>
+                                    <input type="file" id="csv_file" name="csv_file" accept=".csv" required />
+                                    <p class="description">
+                                        CSV with columns: <strong>email</strong> (required), name, first_name, last_name<br>
+                                        <button type="button" id="preview_csv" class="button button-small" style="margin-top: 5px;">Preview Recipients</button>
+                                    </p>
+                                    <div id="csv_preview" style="display: none; margin-top: 10px;"></div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row">
+                                    <label for="subject">Email Subject</label>
+                                </th>
+                                <td>
+                                    <input type="text" id="subject" name="subject" class="large-text" required 
+                                           placeholder="Your subject line here..." />
+                                    <p class="description">Use {name}, {first_name}, {last_name} for personalization</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row">
+                                    <label for="html_content">Email Content</label>
+                                </th>
+                                <td>
+                                    <?php 
+                                    wp_editor('', 'html_content', array(
+                                        'media_buttons' => true,
+                                        'textarea_rows' => 15,
+                                        'teeny' => false,
+                                        'tinymce' => array(
+                                            'plugins' => 'lists,link,image,paste,textcolor',
+                                            'toolbar1' => 'bold,italic,underline,link,unlink,forecolor,alignleft,aligncenter,alignright,bullist,numlist',
+                                            'toolbar2' => 'undo,redo,image,removeformat,code'
+                                        )
+                                    )); 
+                                    ?>
+                                    <p class="description">Use {name}, {first_name}, {last_name}, {email} for personalization</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th scope="row">
+                                    <label for="attachments">Attachments</label>
+                                </th>
+                                <td>
+                                    <input type="file" id="attachments" name="attachments[]" multiple />
+                                    <p class="description">Optional: Select files to attach (PDFs, images, etc.)</p>
+                                </td>
+                            </tr>
+                        </table>
+                        
+                        <div style="margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #0073aa;">
+                            <h3 style="margin-top: 0;">📊 Campaign Preview</h3>
+                            <div id="campaign_summary">
+                                <p><strong>Campaign:</strong> <span id="preview_campaign_name">-</span></p>
+                                <p><strong>Recipients:</strong> <span id="preview_recipient_count">0</span></p>
+                                <p><strong>Subject:</strong> <span id="preview_subject">-</span></p>
+                            </div>
+                        </div>
+                        
+                        <p class="submit">
+                            <input type="button" id="send_campaign" class="button button-primary button-large" 
+                                   value="🚀 Send Campaign" />
+                            <span style="margin-left: 15px; color: #666;">
+                                This will send emails to all recipients in your CSV file.
+                            </span>
+                        </p>
+                    </form>
+                </div>
             </div>
             
-            <h2>Quick Setup</h2>
-            <ol>
-                <li>Configure your Mailgun API credentials in Settings</li>
-                <li>Set your from email and name</li>
-                <li>Upload your alumni CSV file</li>
-                <li>Send your first campaign!</li>
-            </ol>
+            <!-- Campaign Progress -->
+            <div id="campaign_progress" style="display: none; margin: 20px 0;">
+                <div class="postbox">
+                    <h2 class="hndle">📈 Campaign Progress</h2>
+                    <div class="inside">
+                        <div class="progress-bar" style="width: 100%; height: 25px; background: #f1f1f1; border-radius: 12px; overflow: hidden;">
+                            <div id="progress_fill" style="height: 100%; background: linear-gradient(90deg, #0073aa, #00a0d2); width: 0%; transition: width 0.3s ease;"></div>
+                        </div>
+                        <p id="progress_text" style="margin: 10px 0; font-weight: bold;">Preparing to send...</p>
+                        <div id="progress_log" style="max-height: 200px; overflow-y: auto; background: #f9f9f9; padding: 10px; border: 1px solid #ddd; font-family: monospace; font-size: 12px;"></div>
+                    </div>
+                </div>
+            </div>
             
-            <p><strong>Status:</strong> Plugin activated successfully! ✅</p>
+            <!-- Recent Campaigns -->
+            <?php if (!empty($recent_campaigns)): ?>
+            <div class="postbox">
+                <h2 class="hndle">📋 Recent Campaigns</h2>
+                <div class="inside">
+                    <table class="wp-list-table widefat fixed striped">
+                        <thead>
+                            <tr>
+                                <th>Campaign Name</th>
+                                <th>Subject</th>
+                                <th>Recipients</th>
+                                <th>Sent</th>
+                                <th>Status</th>
+                                <th>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($recent_campaigns as $campaign): ?>
+                            <tr>
+                                <td><strong><?php echo esc_html($campaign->campaign_name); ?></strong></td>
+                                <td><?php echo esc_html($campaign->subject); ?></td>
+                                <td><?php echo intval($campaign->recipients_count); ?></td>
+                                <td><?php echo intval($campaign->sent_count); ?></td>
+                                <td>
+                                    <span class="status-<?php echo esc_attr($campaign->status); ?>">
+                                        <?php echo esc_html(ucfirst($campaign->status)); ?>
+                                    </span>
+                                </td>
+                                <td><?php echo esc_html(date('M j, Y H:i', strtotime($campaign->created_at))); ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <?php endif; ?>
         </div>
+        
+        <script>
+        jQuery(document).ready(function($) {
+            let csvData = [];
+            
+            // Update campaign preview
+            function updatePreview() {
+                $('#preview_campaign_name').text($('#campaign_name').val() || '-');
+                $('#preview_subject').text($('#subject').val() || '-');
+                $('#preview_recipient_count').text(csvData.length || '0');
+            }
+            
+            $('#campaign_name, #subject').on('input', updatePreview);
+            
+            // CSV Preview
+            $('#preview_csv').click(function() {
+                var fileInput = $('#csv_file')[0];
+                if (!fileInput.files[0]) {
+                    alert('Please select a CSV file first.');
+                    return;
+                }
+                
+                var formData = new FormData();
+                formData.append('csv_file', fileInput.files[0]);
+                formData.append('action', 'upload_csv');
+                formData.append('nonce', '<?php echo wp_create_nonce('upload_csv'); ?>');
+                
+                $('#csv_preview').html('<p>Loading preview...</p>').show();
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(response) {
+                        if (response.success) {
+                            csvData = response.data.recipients;
+                            updatePreview();
+                            
+                            var html = '<h4>✅ CSV Preview (' + csvData.length + ' recipients)</h4>';
+                            html += '<div style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px;">';
+                            html += '<table style="width: 100%; border-collapse: collapse;">';
+                            html += '<tr style="background: #f9f9f9;"><th>Email</th><th>Name</th></tr>';
+                            
+                            csvData.slice(0, 10).forEach(function(recipient) {
+                                html += '<tr><td>' + recipient.email + '</td><td>' + (recipient.name || recipient.first_name + ' ' + recipient.last_name) + '</td></tr>';
+                            });
+                            
+                            if (csvData.length > 10) {
+                                html += '<tr><td colspan="2"><em>... and ' + (csvData.length - 10) + ' more</em></td></tr>';
+                            }
+                            html += '</table></div>';
+                            
+                            $('#csv_preview').html(html);
+                        } else {
+                            $('#csv_preview').html('<div class="notice notice-error"><p>Error: ' + response.data.message + '</p></div>');
+                        }
+                    }
+                });
+            });
+            
+            // Send Campaign
+            $('#send_campaign').click(function() {
+                if (!csvData.length) {
+                    alert('Please upload and preview your CSV file first.');
+                    return;
+                }
+                
+                if (!$('#campaign_name').val() || !$('#subject').val()) {
+                    alert('Please fill in the campaign name and subject.');
+                    return;
+                }
+                
+                if (!tinyMCE.get('html_content').getContent()) {
+                    alert('Please write your email content.');
+                    return;
+                }
+                
+                var confirmed = confirm('Send email campaign to ' + csvData.length + ' recipients?\\n\\nThis action cannot be undone.');
+                if (!confirmed) return;
+                
+                var formData = new FormData($('#bulk-email-form')[0]);
+                formData.append('action', 'send_bulk_email');
+                formData.append('nonce', '<?php echo wp_create_nonce('send_bulk_email'); ?>');
+                formData.append('html_content', tinyMCE.get('html_content').getContent());
+                
+                $('#send_campaign').prop('disabled', true);
+                $('#campaign_progress').show();
+                
+                startCampaignProgress();
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(response) {
+                        if (response.success) {
+                            $('#progress_text').text('✅ Campaign completed successfully!');
+                            $('#progress_fill').css('width', '100%').css('background', 'linear-gradient(90deg, #46b450, #5cbf60)');
+                            setTimeout(function() {
+                                location.reload();
+                            }, 2000);
+                        } else {
+                            $('#progress_text').text('❌ Campaign failed: ' + response.data.message);
+                            $('#progress_fill').css('background', 'linear-gradient(90deg, #dc3232, #e65054)');
+                        }
+                    },
+                    complete: function() {
+                        $('#send_campaign').prop('disabled', false);
+                    }
+                });
+            });
+            
+            function startCampaignProgress() {
+                let progress = 0;
+                const interval = setInterval(function() {
+                    progress += Math.random() * 15;
+                    if (progress > 95) progress = 95;
+                    
+                    $('#progress_fill').css('width', progress + '%');
+                    $('#progress_text').text('Sending emails... ' + Math.round(progress) + '%');
+                    
+                    if (progress >= 95) {
+                        clearInterval(interval);
+                    }
+                }, 500);
+            }
+        });
+        </script>
+        
+        <style>
+        .status-draft { color: #666; }
+        .status-sending { color: #0073aa; font-weight: bold; }
+        .status-completed { color: #46b450; font-weight: bold; }
+        .status-failed { color: #dc3232; font-weight: bold; }
+        .postbox { background: white; border: 1px solid #ccd0d4; box-shadow: 0 1px 1px rgba(0,0,0,0.04); }
+        .postbox .hndle { padding: 12px; background: #f1f1f1; border-bottom: 1px solid #ccd0d4; font-size: 14px; font-weight: 600; }
+        .postbox .inside { padding: 20px; }
+        </style>
         <?php
+    }
+    
+    private function is_mailgun_configured() {
+        $api_key = get_option('alumni_mailgun_api_key', '');
+        $domain = get_option('alumni_mailgun_domain', '');
+        $from_email = get_option('alumni_from_email', '');
+        return !empty($api_key) && !empty($domain) && !empty($from_email);
     }
     
     public function settings_page() {
@@ -313,6 +639,247 @@ class AlumniBulkEmail {
             echo json_encode(array('success' => false, 'data' => array('message' => $result['error'])));
         }
         exit;
+    }
+    
+    public function handle_csv_upload() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'upload_csv') || !current_user_can('manage_options')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No file uploaded or upload error')));
+            exit;
+        }
+        
+        $file = $_FILES['csv_file']['tmp_name'];
+        $recipients = $this->parse_csv_file($file);
+        
+        if (empty($recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No valid email addresses found in CSV')));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true, 
+            'data' => array(
+                'recipients' => $recipients,
+                'count' => count($recipients)
+            )
+        ));
+        exit;
+    }
+    
+    public function handle_bulk_email() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'send_bulk_email') || !current_user_can('manage_options')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        if (!$this->is_mailgun_configured()) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Mailgun not configured')));
+            exit;
+        }
+        
+        $campaign_name = sanitize_text_field($_POST['campaign_name']);
+        $subject = sanitize_text_field($_POST['subject']);
+        $html_content = wp_kses_post($_POST['html_content']);
+        
+        if (empty($campaign_name) || empty($subject) || empty($html_content)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Missing required fields')));
+            exit;
+        }
+        
+        // Parse CSV file
+        if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'CSV file required')));
+            exit;
+        }
+        
+        $recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+        if (empty($recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients in CSV')));
+            exit;
+        }
+        
+        // Create campaign record
+        global $wpdb;
+        $campaign_id = $this->create_campaign_record($campaign_name, $subject, $html_content, count($recipients));
+        
+        if (!$campaign_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to create campaign record')));
+            exit;
+        }
+        
+        // Send emails
+        $sent_count = 0;
+        $failed_count = 0;
+        
+        foreach ($recipients as $recipient) {
+            $personalized_subject = $this->personalize_content($subject, $recipient);
+            $personalized_html = $this->personalize_content($html_content, $recipient);
+            
+            $result = $this->send_mailgun_email(
+                $recipient['email'],
+                $personalized_subject,
+                $personalized_html
+            );
+            
+            // Log email attempt
+            $this->log_email_attempt($campaign_id, $recipient, $result['success'] ? 'sent' : 'failed', $result);
+            
+            if ($result['success']) {
+                $sent_count++;
+            } else {
+                $failed_count++;
+            }
+            
+            // Small delay to avoid overwhelming Mailgun
+            usleep(100000); // 0.1 second delay
+        }
+        
+        // Update campaign statistics
+        $wpdb->update(
+            $wpdb->prefix . 'alumni_email_campaigns',
+            array(
+                'sent_count' => $sent_count,
+                'status' => 'completed',
+                'sent_at' => current_time('mysql')
+            ),
+            array('id' => $campaign_id),
+            array('%d', '%s', '%s'),
+            array('%d')
+        );
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'message' => "Campaign completed! Sent: {$sent_count}, Failed: {$failed_count}",
+                'sent_count' => $sent_count,
+                'failed_count' => $failed_count
+            )
+        ));
+        exit;
+    }
+    
+    private function parse_csv_file($file_path) {
+        $recipients = array();
+        
+        if (($handle = fopen($file_path, "r")) !== FALSE) {
+            $header = fgetcsv($handle, 1000, ",");
+            if (!$header) {
+                fclose($handle);
+                return $recipients;
+            }
+            
+            // Find email column (case insensitive)
+            $email_col = false;
+            $name_col = false;
+            $first_name_col = false;
+            $last_name_col = false;
+            
+            foreach ($header as $index => $column) {
+                $column_lower = strtolower(trim($column));
+                if (in_array($column_lower, array('email', 'email_address', 'emailaddress'))) {
+                    $email_col = $index;
+                } elseif (in_array($column_lower, array('name', 'full_name', 'fullname'))) {
+                    $name_col = $index;
+                } elseif (in_array($column_lower, array('first_name', 'firstname', 'fname'))) {
+                    $first_name_col = $index;
+                } elseif (in_array($column_lower, array('last_name', 'lastname', 'lname'))) {
+                    $last_name_col = $index;
+                }
+            }
+            
+            if ($email_col === false) {
+                fclose($handle);
+                return $recipients;
+            }
+            
+            while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
+                $email = trim($data[$email_col]);
+                if (is_email($email)) {
+                    $name = '';
+                    if ($name_col !== false && isset($data[$name_col])) {
+                        $name = trim($data[$name_col]);
+                    } elseif ($first_name_col !== false && $last_name_col !== false) {
+                        $first = isset($data[$first_name_col]) ? trim($data[$first_name_col]) : '';
+                        $last = isset($data[$last_name_col]) ? trim($data[$last_name_col]) : '';
+                        $name = trim($first . ' ' . $last);
+                    }
+                    
+                    $recipients[] = array(
+                        'email' => $email,
+                        'name' => $name,
+                        'first_name' => $first_name_col !== false && isset($data[$first_name_col]) ? trim($data[$first_name_col]) : '',
+                        'last_name' => $last_name_col !== false && isset($data[$last_name_col]) ? trim($data[$last_name_col]) : ''
+                    );
+                }
+            }
+            fclose($handle);
+        }
+        
+        return $recipients;
+    }
+    
+    private function create_campaign_record($campaign_name, $subject, $html_content, $recipients_count) {
+        global $wpdb;
+        
+        $result = $wpdb->insert(
+            $wpdb->prefix . 'alumni_email_campaigns',
+            array(
+                'campaign_name' => $campaign_name,
+                'subject' => $subject,
+                'html_content' => $html_content,
+                'recipients_count' => $recipients_count,
+                'status' => 'sending',
+                'created_at' => current_time('mysql')
+            ),
+            array('%s', '%s', '%s', '%d', '%s', '%s')
+        );
+        
+        return $result ? $wpdb->insert_id : false;
+    }
+    
+    private function log_email_attempt($campaign_id, $recipient, $status, $result) {
+        global $wpdb;
+        
+        $mailgun_message_id = '';
+        if ($status === 'sent' && isset($result['response'])) {
+            $response_data = json_decode($result['response'], true);
+            if (isset($response_data['id'])) {
+                $mailgun_message_id = $response_data['id'];
+            }
+        }
+        
+        $wpdb->insert(
+            $wpdb->prefix . 'alumni_email_logs',
+            array(
+                'campaign_id' => $campaign_id,
+                'recipient_email' => $recipient['email'],
+                'recipient_name' => $recipient['name'],
+                'status' => $status,
+                'sent_at' => current_time('mysql'),
+                'bounce_reason' => $status === 'failed' ? $result['error'] : null,
+                'mailgun_message_id' => $mailgun_message_id
+            ),
+            array('%d', '%s', '%s', '%s', '%s', '%s', '%s')
+        );
+    }
+    
+    private function personalize_content($content, $recipient) {
+        $replacements = array(
+            '{email}' => $recipient['email'],
+            '{name}' => $recipient['name'] ?: $recipient['email'],
+            '{first_name}' => $recipient['first_name'] ?: '',
+            '{last_name}' => $recipient['last_name'] ?: ''
+        );
+        
+        return str_replace(array_keys($replacements), array_values($replacements), $content);
     }
     
     private function send_mailgun_email($to, $subject, $html, $text = '') {
