@@ -45,8 +45,9 @@ A comprehensive WordPress plugin for sending bulk emails to alumni with advanced
 
 ### Prerequisites
 - **WordPress**: 5.0 or higher
-- **PHP**: 7.4 or higher  
+- **PHP**: 7.4 or higher (8.0+ recommended)
 - **Mailgun Account**: For email delivery (free tier available)
+- **Composer**: For dependency management (PHPSpreadsheet for Excel support)
 
 ### Installation Methods
 
@@ -410,6 +411,55 @@ define('WP_DEBUG_LOG', true);
 ```
 
 Error logs will appear in `/wp-content/debug.log`
+
+## 🏗️ Technical Architecture
+
+### Plugin Structure (Refactored Multi-File Architecture)
+The plugin has been refactored from a 5,541-line monolithic file into a clean, maintainable multi-file architecture:
+
+```
+alumni-bulk-email-plugin/
+├── alumni-bulk-email.php          # Main plugin orchestrator (719 lines)
+├── includes/                      # Core class files
+│   ├── class-database.php         # Database schema & utilities (184 lines)
+│   ├── class-file-processor.php   # CSV/Excel import/export (392 lines)  
+│   ├── class-email-service.php    # Mailgun integration (428 lines)
+│   ├── class-list-manager.php     # Recipient list operations (485 lines)
+│   ├── class-campaign-manager.php # Campaign management (388 lines)
+│   └── class-ajax-handlers.php    # AJAX endpoint handlers (1,234 lines)
+├── vendor/                        # Composer dependencies (PHPSpreadsheet)
+└── TESTING.md                     # Testing procedures and validation
+```
+
+### Key Improvements
+- ✅ **Separation of concerns** - Each class handles a specific domain
+- ✅ **27 AJAX endpoints** - All properly implemented and tested
+- ✅ **Comprehensive testing** - Validation framework included
+- ✅ **Excel support** - PHPSpreadsheet integration for .xlsx/.xls files
+- ✅ **PHP 8.0+ compatibility** - Deprecation warnings fixed
+
+### Testing & Validation
+The plugin includes a complete testing suite for development and validation:
+
+```bash
+# Test class loading and dependencies
+php test-basic.php
+
+# Test all 27 AJAX endpoint mappings
+php test-ajax.php
+
+# Test CSV/Excel file processing
+php test-file-processing.php  
+
+# Test email service functionality
+php test-email-service.php
+```
+
+See `TESTING.md` for complete testing procedures and checklist.
+
+### Dependencies
+- **PHPSpreadsheet** (^1.29) - Excel file processing
+- **Plugin Update Checker** (^5.0) - Automatic GitHub updates
 
 ## 📞 Support & Contributing
 

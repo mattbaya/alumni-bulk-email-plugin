@@ -7,18 +7,28 @@ This file contains technical details, dependencies, architecture information, an
 ### Core Plugin Structure
 ```
 alumni-bulk-email-plugin/
-├── alumni-bulk-email.php          # Main plugin file (5,400+ lines)
+├── alumni-bulk-email.php          # Main plugin orchestrator (719 lines)
+├── includes/                      # Core class files
+│   ├── class-database.php         # Database schema & utilities (184 lines)
+│   ├── class-file-processor.php   # CSV/Excel import/export (392 lines)
+│   ├── class-email-service.php    # Mailgun integration (428 lines)
+│   ├── class-list-manager.php     # Recipient list operations (485 lines)
+│   ├── class-campaign-manager.php # Campaign management (388 lines)
+│   └── class-ajax-handlers.php    # AJAX endpoint handlers (1,234 lines)
 ├── composer.json                  # PHP dependencies
 ├── composer.lock                  # Locked dependency versions
 ├── vendor/                        # Composer dependencies
+├── TESTING.md                     # Testing procedures and checklist
 ├── README.md                      # User documentation
 └── CLAUDE.md                      # Technical documentation (this file)
 ```
 
-### Main Plugin File (`alumni-bulk-email.php`)
-- **Single-file architecture** for simplicity and portability
+### Multi-File Architecture (Refactored from 5,541-line monolith)
+- **Separation of concerns**: Each class handles a specific domain
+- **Dependency injection**: Clean class relationships and testability
+- **Maintainable codebase**: Easier to navigate and modify
 - **WordPress plugin standards** compliance
-- **Object-oriented design** with the `AlumniBulkEmail` class
+- **Object-oriented design** with clear class responsibilities
 - **Hook-based integration** with WordPress
 
 ## 📦 Dependencies & Requirements
@@ -271,6 +281,31 @@ All AJAX handlers return consistent JSON responses:
 
 ## 🧪 Testing & Quality Assurance
 
+### Comprehensive Testing Framework
+The plugin includes a complete testing suite in `TESTING.md` with systematic validation procedures:
+
+#### Test Files Included
+- **test-basic.php** - Class instantiation and dependency loading
+- **test-ajax.php** - AJAX handler registration and method mapping  
+- **test-file-processing.php** - CSV/Excel parsing and validation
+- **test-email-service.php** - Email personalization and token generation
+- **test-sample.csv** - Sample data for testing file processing
+
+#### Running Tests
+```bash
+# Test basic class loading
+php test-basic.php
+
+# Test AJAX handler completeness (all 27 endpoints)  
+php test-ajax.php
+
+# Test file processing with sample data
+php test-file-processing.php
+
+# Test email service functionality
+php test-email-service.php
+```
+
 ### Error Logging
 Comprehensive logging throughout the application:
 ```php
@@ -296,10 +331,10 @@ composer install
 composer update
 
 # Check WordPress coding standards (if PHPCS installed)
-phpcs --standard=WordPress alumni-bulk-email.php
+phpcs --standard=WordPress includes/*.php
 
-# Check PHP syntax
-php -l alumni-bulk-email.php
+# Check PHP syntax on all class files
+php -l includes/class-*.php
 ```
 
 ## 🚀 Performance Considerations
@@ -363,14 +398,20 @@ define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
 ### Current Limitations
 1. **Excel file size**: Large Excel files may cause memory issues
 2. **Webhook delays**: Mailgun webhooks may have delays in processing
-3. **Single-file architecture**: All code in one file (design choice for simplicity)
-4. **No built-in scheduling**: Campaigns must be sent immediately
+3. **No built-in scheduling**: Campaigns must be sent immediately
+4. **Database dependencies**: Some functions require full WordPress environment for testing
 
-### Potential Improvements
+### Recent Improvements ✅
+1. ~~**Multi-file architecture**: Split into multiple files for better organization~~ **COMPLETED**
+2. ~~**Testing framework**: Systematic validation of all components~~ **COMPLETED**  
+3. ~~**AJAX handler completeness**: All 27 endpoints properly implemented~~ **COMPLETED**
+4. ~~**PHP compatibility**: Fixed deprecation warnings~~ **COMPLETED**
+
+### Potential Future Improvements
 1. **Background processing**: Use WordPress cron for large campaigns
 2. **File chunking**: Process large files in chunks
 3. **Caching layer**: Add Redis/Memcached support
-4. **Multi-file architecture**: Split into multiple files for better organization
+4. **Enhanced testing**: Integration tests with full WordPress environment
 
 ## 🛠️ Development Guidelines
 
@@ -457,10 +498,18 @@ git add -A && git commit -m "Description" && git push
 ```
 
 ### Key Function Locations
-- Email sending: `handle_bulk_email()` around line 1400
-- CSV parsing: `parse_csv_file()` around line 1778
-- Excel parsing: `parse_excel_file()` around line 1844
-- Export functionality: `handle_export_recipient_list()` around line 3158
-- List management: Various `handle_*` functions around lines 2400-3000
+- **Email sending**: `handle_bulk_email()` in `includes/class-ajax-handlers.php:234`
+- **CSV parsing**: `parse_csv_file()` in `includes/class-file-processor.php:38`  
+- **Excel parsing**: `parse_excel_file()` in `includes/class-file-processor.php:107`
+- **Export functionality**: `handle_export_recipient_list()` in `includes/class-ajax-handlers.php:466`
+- **List management**: Various `handle_*` functions in `includes/class-ajax-handlers.php`
+- **Database operations**: Static methods in `includes/class-database.php`
+- **Email service**: Mailgun integration in `includes/class-email-service.php`
 
-This plugin is production-ready and actively maintained. All changes should maintain backward compatibility and follow WordPress security best practices.
+### Testing Validation
+- **All 27 AJAX endpoints**: Verified implemented and mapped correctly
+- **File processing**: Tested with CSV/Excel samples, PHP deprecation warnings fixed
+- **Email service**: Personalization and token generation validated
+- **Class loading**: All dependencies load without errors
+
+This plugin is production-ready and actively maintained. The recent refactoring improved maintainability while preserving all functionality. All changes maintain backward compatibility and follow WordPress security best practices.
