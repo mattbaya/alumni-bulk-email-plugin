@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.1.5
+ * Version: 0.1.6
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.1.5');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.1.6');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -50,6 +50,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_save_campaign', array($this, 'handle_save_campaign'));
         add_action('wp_ajax_load_campaign', array($this, 'handle_load_campaign'));
         add_action('wp_ajax_delete_campaign', array($this, 'handle_delete_campaign'));
+        add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
         
         // Create tables on activation
         register_activation_hook(__FILE__, array($this, 'create_tables'));
@@ -712,6 +713,13 @@ class AlumniBulkEmail {
                 <code>https://github.com/<?php echo ALUMNI_BULK_EMAIL_GITHUB_REPO; ?></code>
                 <p class="description">Updates will appear in your WordPress admin when available. Current version: <strong><?php echo ALUMNI_BULK_EMAIL_VERSION; ?></strong></p>
                 
+                <h2>Database</h2>
+                <p>If you're experiencing issues with saving campaigns, you can recreate the database tables:</p>
+                <button type="button" id="recreate_tables" class="button button-secondary">
+                    🔧 Recreate Database Tables
+                </button>
+                <div id="recreate_tables_result" style="margin-top: 10px;"></div>
+                
                 <?php submit_button(); ?>
             </form>
             
@@ -789,6 +797,41 @@ class AlumniBulkEmail {
                     },
                     complete: function() {
                         button.prop('disabled', false).text('Send Test Email');
+                    }
+                });
+            });
+            
+            // Recreate Tables
+            $('#recreate_tables').click(function() {
+                var button = $(this);
+                var resultDiv = $('#recreate_tables_result');
+                
+                if (!confirm('This will recreate the database tables. Are you sure?')) {
+                    return;
+                }
+                
+                button.prop('disabled', true).text('Recreating...');
+                resultDiv.html('<div class="notice notice-info"><p>Recreating database tables...</p></div>');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'recreate_tables',
+                        nonce: '<?php echo wp_create_nonce('recreate_tables'); ?>'
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            resultDiv.html('<div class="notice notice-success"><p>' + response.data.message + '</p></div>');
+                        } else {
+                            resultDiv.html('<div class="notice notice-error"><p>Error: ' + response.data.message + '</p></div>');
+                        }
+                    },
+                    error: function() {
+                        resultDiv.html('<div class="notice notice-error"><p>An error occurred while recreating tables.</p></div>');
+                    },
+                    complete: function() {
+                        button.prop('disabled', false).text('🔧 Recreate Database Tables');
                     }
                 });
             });
@@ -1144,6 +1187,15 @@ class AlumniBulkEmail {
         
         global $wpdb;
         
+        // Check if table exists first
+        $table_name = $wpdb->prefix . 'alumni_email_campaigns';
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_name'") === $table_name;
+        
+        if (!$table_exists) {
+            // Create tables if they don't exist
+            $this->create_tables();
+        }
+        
         if ($campaign_id > 0) {
             // Update existing campaign
             $result = $wpdb->update(
@@ -1160,7 +1212,8 @@ class AlumniBulkEmail {
             );
             
             if ($result === false) {
-                echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to update campaign')));
+                $error_msg = $wpdb->last_error ? $wpdb->last_error : 'Failed to update campaign';
+                echo json_encode(array('success' => false, 'data' => array('message' => $error_msg)));
                 exit;
             }
             
@@ -1181,7 +1234,8 @@ class AlumniBulkEmail {
             );
             
             if (!$result) {
-                echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to save campaign')));
+                $error_msg = $wpdb->last_error ? $wpdb->last_error : 'Failed to save campaign';
+                echo json_encode(array('success' => false, 'data' => array('message' => $error_msg)));
                 exit;
             }
             
@@ -1264,6 +1318,30 @@ class AlumniBulkEmail {
             'success' => true,
             'data' => array('message' => 'Campaign deleted successfully')
         ));
+        exit;
+    }
+    
+    public function handle_recreate_tables() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'recreate_tables') || !current_user_can('manage_options')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $this->create_tables();
+            echo json_encode(array(
+                'success' => true,
+                'data' => array('message' => 'Database tables recreated successfully')
+            ));
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error recreating tables: ' . $e->getMessage())
+            ));
+        }
+        
         exit;
     }
     
