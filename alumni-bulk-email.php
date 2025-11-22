@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.3.6
+ * Version: 0.4.0
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.3.6');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.4.0');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -39,6 +39,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_load_recipient_list', array($this, 'handle_load_recipient_list'));
         add_action('wp_ajax_upload_save_csv', array($this, 'handle_upload_save_csv'));
         add_action('wp_ajax_create_recipient_list', array($this, 'handle_create_recipient_list'));
+        add_action('wp_ajax_combine_recipient_lists', array($this, 'handle_combine_recipient_lists'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -159,6 +160,24 @@ class AlumniBulkEmail {
             'edit_posts',
             'alumni-recipient-lists',
             array($this, 'recipient_lists_page')
+        );
+        
+        add_submenu_page(
+            'alumni-bulk-email',
+            'Unsubscribed',
+            'Unsubscribed',
+            'edit_posts',
+            'alumni-unsubscribed',
+            array($this, 'unsubscribed_page')
+        );
+        
+        add_submenu_page(
+            'alumni-bulk-email',
+            'Bounced Emails',
+            'Bounced Emails',
+            'edit_posts',
+            'alumni-bounced',
+            array($this, 'bounced_page')
         );
         
         add_submenu_page(
@@ -2166,6 +2185,82 @@ class AlumniBulkEmail {
         return $recipients;
     }
     
+    public function handle_combine_recipient_lists() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'combine_recipient_lists') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_ids = array_map('intval', $_POST['list_ids']);
+        $new_list_name = sanitize_text_field($_POST['new_list_name']);
+        
+        if (empty($list_ids) || empty($new_list_name)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Missing required data')));
+            exit;
+        }
+        
+        global $wpdb;
+        
+        // Get all recipients from the specified lists
+        $all_recipients = array();
+        $email_tracker = array(); // To track duplicates
+        
+        foreach ($list_ids as $list_id) {
+            $list = $wpdb->get_row($wpdb->prepare(
+                "SELECT recipients_data FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+                $list_id
+            ));
+            
+            if ($list && $list->recipients_data) {
+                $recipients = json_decode($list->recipients_data, true);
+                if (is_array($recipients)) {
+                    foreach ($recipients as $recipient) {
+                        $email = strtolower($recipient['email']);
+                        // Only add if not already added (remove duplicates)
+                        if (!isset($email_tracker[$email])) {
+                            $all_recipients[] = $recipient;
+                            $email_tracker[$email] = true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (empty($all_recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No recipients found in selected lists')));
+            exit;
+        }
+        
+        // Save combined list
+        $result = $wpdb->insert(
+            $wpdb->prefix . 'alumni_recipient_lists',
+            array(
+                'list_name' => $new_list_name,
+                'description' => 'Combined from ' . count($list_ids) . ' lists',
+                'recipients_data' => json_encode($all_recipients),
+                'total_count' => count($all_recipients)
+            ),
+            array('%s', '%s', '%s', '%d')
+        );
+        
+        if ($result === false) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to save combined list')));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'list_id' => $wpdb->insert_id,
+                'list_name' => $new_list_name,
+                'total_recipients' => count($all_recipients)
+            )
+        ));
+        exit;
+    }
+    
     public function handle_recreate_tables() {
         header('Content-Type: application/json');
         
@@ -2523,15 +2618,29 @@ class AlumniBulkEmail {
                             <input type="submit" id="search-submit" class="button" value="Search Lists">
                         </p>
                     </div>
+                    <div class="alignright" id="filtered-actions" style="display: none;">
+                        <button type="button" id="create-from-filtered" class="button button-secondary">
+                            📋 Create List from Filtered Results
+                        </button>
+                        <span id="filtered-count" style="margin-left: 10px; color: #666;"></span>
+                    </div>
                 </div>
                 
-                <table class="wp-list-table widefat fixed striped">
+                <table class="wp-list-table widefat fixed striped" id="recipients-table">
                     <thead>
                         <tr>
-                            <th scope="col">List Name</th>
-                            <th scope="col">Recipients Count</th>
-                            <th scope="col">Created</th>
-                            <th scope="col">Last Updated</th>
+                            <th scope="col" class="sortable" data-sort="list_name">
+                                List Name <span class="sort-indicator"></span>
+                            </th>
+                            <th scope="col" class="sortable" data-sort="total_count">
+                                Recipients Count <span class="sort-indicator"></span>
+                            </th>
+                            <th scope="col" class="sortable" data-sort="created_at">
+                                Created <span class="sort-indicator"></span>
+                            </th>
+                            <th scope="col" class="sortable" data-sort="updated_at">
+                                Last Updated <span class="sort-indicator"></span>
+                            </th>
                             <th scope="col">Actions</th>
                         </tr>
                     </thead>
@@ -2554,11 +2663,99 @@ class AlumniBulkEmail {
             <?php endif; ?>
         </div>
         
+        <style>
+        .sortable {
+            cursor: pointer;
+            position: relative;
+            padding-right: 20px !important;
+        }
+        .sortable:hover {
+            background-color: #f0f0f0;
+        }
+        .sort-indicator {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0.3;
+        }
+        .sort-indicator::before {
+            content: "↕";
+        }
+        .sortable.sort-asc .sort-indicator {
+            opacity: 1;
+        }
+        .sortable.sort-asc .sort-indicator::before {
+            content: "↑";
+        }
+        .sortable.sort-desc .sort-indicator {
+            opacity: 1;
+        }
+        .sortable.sort-desc .sort-indicator::before {
+            content: "↓";
+        }
+        #list-search-input {
+            width: 200px;
+        }
+        .search-highlight {
+            background-color: yellow;
+            font-weight: bold;
+        }
+        </style>
+        
         <script>
         jQuery(document).ready(function($) {
             // Create new list modal
             $('#create-new-list').click(function() {
                 showCreateListModal();
+            });
+            
+            // Table sorting functionality
+            $('.sortable').click(function() {
+                var column = $(this).data('sort');
+                var currentSort = $(this).hasClass('sort-asc') ? 'asc' : ($(this).hasClass('sort-desc') ? 'desc' : 'none');
+                var newSort = currentSort === 'asc' ? 'desc' : 'asc';
+                
+                // Remove all sort classes
+                $('.sortable').removeClass('sort-asc sort-desc');
+                
+                // Add new sort class
+                $(this).addClass('sort-' + newSort);
+                
+                // Sort the table
+                sortTable(column, newSort);
+            });
+            
+            // Search functionality
+            $('#list-search-input').on('input', function() {
+                var searchTerm = $(this).val().toLowerCase();
+                filterTable(searchTerm);
+            });
+            
+            $('#search-submit').click(function(e) {
+                e.preventDefault();
+                var searchTerm = $('#list-search-input').val().toLowerCase();
+                filterTable(searchTerm);
+            });
+            
+            // Create list from filtered results
+            $('#create-from-filtered').click(function() {
+                var visibleRows = $('#recipients-table tbody tr:visible');
+                if (visibleRows.length === 0) {
+                    alert('No lists match the current filter.');
+                    return;
+                }
+                
+                // Get all recipients from visible lists
+                var allRecipients = [];
+                var listNames = [];
+                
+                visibleRows.each(function() {
+                    listNames.push($(this).find('td:eq(0)').text().trim());
+                });
+                
+                // Show modal to name the new combined list
+                showCombineListsModal(listNames);
             });
             
             // View list functionality will be implemented later
@@ -2701,8 +2898,400 @@ class AlumniBulkEmail {
                     }
                 });
             }
+            
+            // Sort table function
+            function sortTable(column, direction) {
+                var table = $('#recipients-table');
+                var tbody = table.find('tbody');
+                var rows = tbody.find('tr').toArray();
+                
+                rows.sort(function(a, b) {
+                    var aVal, bVal;
+                    
+                    switch(column) {
+                        case 'list_name':
+                            aVal = $(a).find('td:eq(0)').text().toLowerCase();
+                            bVal = $(b).find('td:eq(0)').text().toLowerCase();
+                            break;
+                        case 'total_count':
+                            aVal = parseInt($(a).find('td:eq(1)').text().replace(/[^\d]/g, ''));
+                            bVal = parseInt($(b).find('td:eq(1)').text().replace(/[^\d]/g, ''));
+                            break;
+                        case 'created_at':
+                        case 'updated_at':
+                            var colIndex = column === 'created_at' ? 2 : 3;
+                            aVal = new Date($(a).find('td:eq(' + colIndex + ')').text());
+                            bVal = new Date($(b).find('td:eq(' + colIndex + ')').text());
+                            break;
+                        default:
+                            return 0;
+                    }
+                    
+                    if (direction === 'asc') {
+                        return aVal > bVal ? 1 : (aVal < bVal ? -1 : 0);
+                    } else {
+                        return aVal < bVal ? 1 : (aVal > bVal ? -1 : 0);
+                    }
+                });
+                
+                tbody.empty().append(rows);
+            }
+            
+            // Filter table function
+            function filterTable(searchTerm) {
+                var table = $('#recipients-table tbody');
+                var rows = table.find('tr');
+                var visibleCount = 0;
+                
+                rows.each(function() {
+                    var row = $(this);
+                    var listName = row.find('td:eq(0)').text().toLowerCase();
+                    var count = row.find('td:eq(1)').text().toLowerCase();
+                    var created = row.find('td:eq(2)').text().toLowerCase();
+                    var updated = row.find('td:eq(3)').text().toLowerCase();
+                    
+                    // Check if search term matches any column
+                    var matches = listName.includes(searchTerm) || 
+                                 count.includes(searchTerm) || 
+                                 created.includes(searchTerm) || 
+                                 updated.includes(searchTerm);
+                    
+                    if (matches || searchTerm === '') {
+                        row.show();
+                        visibleCount++;
+                        // Highlight matching text
+                        if (searchTerm !== '') {
+                            highlightText(row, searchTerm);
+                        } else {
+                            removeHighlight(row);
+                        }
+                    } else {
+                        row.hide();
+                    }
+                });
+                
+                // Show/hide filtered actions
+                if (searchTerm !== '' && visibleCount > 1) {
+                    $('#filtered-actions').show();
+                    $('#filtered-count').text('(' + visibleCount + ' lists found)');
+                } else {
+                    $('#filtered-actions').hide();
+                }
+            }
+            
+            // Highlight search terms
+            function highlightText(row, searchTerm) {
+                row.find('td:lt(4)').each(function() { // Skip the Actions column
+                    var cell = $(this);
+                    var text = cell.text();
+                    var regex = new RegExp('(' + searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+                    var highlightedText = text.replace(regex, '<span class="search-highlight">$1</span>');
+                    if (highlightedText !== text) {
+                        cell.html(highlightedText);
+                    }
+                });
+            }
+            
+            // Remove highlighting
+            function removeHighlight(row) {
+                row.find('.search-highlight').each(function() {
+                    $(this).replaceWith($(this).text());
+                });
+            }
+            
+            // Show combine lists modal
+            function showCombineListsModal(listNames) {
+                var modalHtml = '<div id="combine-lists-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000;">' +
+                    '<div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 8px; max-width: 500px; max-height: 90vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">' +
+                    '<h2>📋 Create Combined List</h2>' +
+                    '<p>Create a new list by combining recipients from the following filtered lists:</p>' +
+                    '<ul style="margin: 15px 0; padding-left: 20px; max-height: 150px; overflow-y: auto; background: #f9f9f9; border: 1px solid #ddd; border-radius: 4px; padding: 10px;">';
+                
+                listNames.forEach(function(name) {
+                    modalHtml += '<li>' + name + '</li>';
+                });
+                
+                modalHtml += '</ul>' +
+                    '<div style="margin: 20px 0;">' +
+                    '<label for="combined-list-name" style="font-weight: bold;">New List Name:</label><br>' +
+                    '<input type="text" id="combined-list-name" placeholder="e.g., Combined Alumni List - Dec 2024" style="width: 100%; padding: 8px; margin-top: 5px;" />' +
+                    '</div>' +
+                    '<p style="font-size: 14px; color: #666; margin: 15px 0;">Note: Duplicate email addresses will be automatically removed.</p>' +
+                    '<div style="margin-top: 20px; text-align: right;">' +
+                    '<button type="button" id="cancel-combine" class="button" style="margin-right: 10px;">Cancel</button>' +
+                    '<button type="button" id="save-combined-list" class="button button-primary">Create Combined List</button>' +
+                    '</div>' +
+                    '</div></div>';
+                
+                $('body').append(modalHtml);
+                
+                $('#cancel-combine').click(function() {
+                    $('#combine-lists-modal').remove();
+                });
+                
+                $('#save-combined-list').click(function() {
+                    var newListName = $('#combined-list-name').val().trim();
+                    if (!newListName) {
+                        alert('Please enter a name for the combined list.');
+                        return;
+                    }
+                    
+                    // Get list IDs from visible rows
+                    var listIds = [];
+                    $('#recipients-table tbody tr:visible').each(function() {
+                        var listId = $(this).find('.view-list').data('list-id');
+                        if (listId) {
+                            listIds.push(listId);
+                        }
+                    });
+                    
+                    combineLists(listIds, newListName);
+                });
+            }
+            
+            // Combine multiple lists into one
+            function combineLists(listIds, newListName) {
+                $('#save-combined-list').prop('disabled', true).text('Creating...');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'combine_recipient_lists',
+                        nonce: '<?php echo wp_create_nonce('combine_recipient_lists'); ?>',
+                        list_ids: listIds,
+                        new_list_name: newListName
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            $('#combine-lists-modal').remove();
+                            alert('Combined list created successfully with ' + response.data.total_recipients + ' unique recipients!');
+                            location.reload();
+                        } else {
+                            alert('Error creating combined list: ' + response.data.message);
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while creating the combined list.');
+                    },
+                    complete: function() {
+                        $('#save-combined-list').prop('disabled', false).text('Create Combined List');
+                    }
+                });
+            }
         });
         </script>
+        <?php
+    }
+    
+    public function unsubscribed_page() {
+        global $wpdb;
+        
+        // Get unsubscribed emails with pagination
+        $per_page = 50;
+        $current_page = isset($_GET['paged']) ? max(1, intval($_GET['paged'])) : 1;
+        $offset = ($current_page - 1) * $per_page;
+        
+        $unsubscribed = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_email_unsubscribes 
+             WHERE unsubscribed_at IS NOT NULL 
+             ORDER BY unsubscribed_at DESC 
+             LIMIT %d OFFSET %d",
+            $per_page, $offset
+        ));
+        
+        $total_unsubscribed = $wpdb->get_var(
+            "SELECT COUNT(*) FROM {$wpdb->prefix}alumni_email_unsubscribes WHERE unsubscribed_at IS NOT NULL"
+        );
+        
+        ?>
+        <div class="wrap">
+            <h1>🚫 Unsubscribed Emails</h1>
+            
+            <div class="notice notice-info">
+                <p><strong>Unsubscribed List:</strong> These email addresses have opted out and will be automatically excluded from future campaigns.</p>
+            </div>
+            
+            <?php if (empty($unsubscribed)): ?>
+                <div class="notice notice-success">
+                    <p>No unsubscribed emails found. Great engagement!</p>
+                </div>
+            <?php else: ?>
+                <div class="tablenav top">
+                    <div class="alignleft actions">
+                        <span class="displaying-num"><?php echo number_format($total_unsubscribed); ?> unsubscribed email<?php echo $total_unsubscribed !== 1 ? 's' : ''; ?></span>
+                    </div>
+                </div>
+                
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th scope="col">Email Address</th>
+                            <th scope="col">Unsubscribed Date</th>
+                            <th scope="col">IP Address</th>
+                            <th scope="col">User Agent</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($unsubscribed as $unsub): ?>
+                            <tr>
+                                <td><strong><?php echo esc_html($unsub->email); ?></strong></td>
+                                <td><?php echo date('M j, Y g:i A', strtotime($unsub->unsubscribed_at)); ?></td>
+                                <td><?php echo esc_html($unsub->ip_address ?: 'Unknown'); ?></td>
+                                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;"><?php echo esc_html(substr($unsub->user_agent ?: 'Unknown', 0, 50)) . (strlen($unsub->user_agent) > 50 ? '...' : ''); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                
+                <?php
+                // Simple pagination
+                $total_pages = ceil($total_unsubscribed / $per_page);
+                if ($total_pages > 1):
+                ?>
+                <div class="tablenav bottom">
+                    <div class="tablenav-pages">
+                        <?php
+                        $page_links = paginate_links(array(
+                            'base' => add_query_arg('paged', '%#%'),
+                            'format' => '',
+                            'prev_text' => '&laquo; Previous',
+                            'next_text' => 'Next &raquo;',
+                            'total' => $total_pages,
+                            'current' => $current_page
+                        ));
+                        echo $page_links;
+                        ?>
+                    </div>
+                </div>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+    
+    public function bounced_page() {
+        global $wpdb;
+        
+        // Get bounced emails with recent bounce counts
+        $per_page = 50;
+        $current_page = isset($_GET['paged']) ? max(1, intval($_GET['paged'])) : 1;
+        $offset = ($current_page - 1) * $per_page;
+        
+        $bounced_emails = $wpdb->get_results($wpdb->prepare(
+            "SELECT recipient_email, 
+                    COUNT(*) as bounce_count,
+                    MAX(sent_at) as last_bounce,
+                    bounce_reason
+             FROM {$wpdb->prefix}alumni_email_logs 
+             WHERE status IN ('failed', 'bounced') 
+             AND bounce_reason IS NOT NULL
+             AND sent_at > DATE_SUB(NOW(), INTERVAL 90 DAY)
+             GROUP BY recipient_email 
+             ORDER BY bounce_count DESC, last_bounce DESC 
+             LIMIT %d OFFSET %d",
+            $per_page, $offset
+        ));
+        
+        $total_bounced = $wpdb->get_var(
+            "SELECT COUNT(DISTINCT recipient_email) 
+             FROM {$wpdb->prefix}alumni_email_logs 
+             WHERE status IN ('failed', 'bounced') 
+             AND bounce_reason IS NOT NULL
+             AND sent_at > DATE_SUB(NOW(), INTERVAL 90 DAY)"
+        );
+        
+        ?>
+        <div class="wrap">
+            <h1>📧 Bounced Emails (Last 90 Days)</h1>
+            
+            <div class="notice notice-warning">
+                <p><strong>Bounce Management:</strong> Emails with 3+ bounces are automatically excluded from campaigns. Consider cleaning your lists regularly.</p>
+            </div>
+            
+            <?php if (empty($bounced_emails)): ?>
+                <div class="notice notice-success">
+                    <p>No bounced emails found in the last 90 days. Excellent list quality!</p>
+                </div>
+            <?php else: ?>
+                <div class="tablenav top">
+                    <div class="alignleft actions">
+                        <span class="displaying-num"><?php echo number_format($total_bounced); ?> email<?php echo $total_bounced !== 1 ? 's' : ''; ?> with bounces</span>
+                    </div>
+                </div>
+                
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th scope="col">Email Address</th>
+                            <th scope="col">Bounce Count</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">Last Bounce</th>
+                            <th scope="col">Bounce Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($bounced_emails as $bounce): ?>
+                            <tr>
+                                <td><strong><?php echo esc_html($bounce->recipient_email); ?></strong></td>
+                                <td>
+                                    <span class="bounce-count <?php echo $bounce->bounce_count >= 3 ? 'high' : 'medium'; ?>">
+                                        <?php echo $bounce->bounce_count; ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <?php if ($bounce->bounce_count >= 3): ?>
+                                        <span style="color: #d63384; font-weight: bold;">🚫 Blocked</span>
+                                    <?php else: ?>
+                                        <span style="color: #fd7e14;">⚠️ Warning</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td><?php echo date('M j, Y g:i A', strtotime($bounce->last_bounce)); ?></td>
+                                <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis;"><?php echo esc_html($bounce->bounce_reason); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                
+                <?php
+                // Simple pagination
+                $total_pages = ceil($total_bounced / $per_page);
+                if ($total_pages > 1):
+                ?>
+                <div class="tablenav bottom">
+                    <div class="tablenav-pages">
+                        <?php
+                        $page_links = paginate_links(array(
+                            'base' => add_query_arg('paged', '%#%'),
+                            'format' => '',
+                            'prev_text' => '&laquo; Previous',
+                            'next_text' => 'Next &raquo;',
+                            'total' => $total_pages,
+                            'current' => $current_page
+                        ));
+                        echo $page_links;
+                        ?>
+                    </div>
+                </div>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
+        
+        <style>
+        .bounce-count {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .bounce-count.high {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .bounce-count.medium {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        </style>
         <?php
     }
     
