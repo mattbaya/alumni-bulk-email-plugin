@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.4.0
+ * Version: 0.5.0
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.4.0');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.5.0');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -40,6 +40,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_upload_save_csv', array($this, 'handle_upload_save_csv'));
         add_action('wp_ajax_create_recipient_list', array($this, 'handle_create_recipient_list'));
         add_action('wp_ajax_combine_recipient_lists', array($this, 'handle_combine_recipient_lists'));
+        add_action('wp_ajax_view_recipient_list', array($this, 'handle_view_recipient_list'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -1636,22 +1637,17 @@ class AlumniBulkEmail {
                 return $recipients;
             }
             
-            // Find email column (case insensitive)
+            // Clean up header names and find email column
+            $cleaned_headers = array();
             $email_col = false;
-            $name_col = false;
-            $first_name_col = false;
-            $last_name_col = false;
             
             foreach ($header as $index => $column) {
-                $column_lower = strtolower(trim($column));
+                $cleaned_header = trim($column);
+                $cleaned_headers[$index] = $cleaned_header;
+                
+                $column_lower = strtolower($cleaned_header);
                 if (in_array($column_lower, array('email', 'email_address', 'emailaddress'))) {
                     $email_col = $index;
-                } elseif (in_array($column_lower, array('name', 'full_name', 'fullname'))) {
-                    $name_col = $index;
-                } elseif (in_array($column_lower, array('first_name', 'firstname', 'fname'))) {
-                    $first_name_col = $index;
-                } elseif (in_array($column_lower, array('last_name', 'lastname', 'lname'))) {
-                    $last_name_col = $index;
                 }
             }
             
@@ -1661,29 +1657,130 @@ class AlumniBulkEmail {
             }
             
             while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
+                if (count($data) < count($header)) {
+                    // Skip rows with insufficient data
+                    continue;
+                }
+                
                 $email = trim($data[$email_col]);
                 if (is_email($email)) {
-                    $name = '';
-                    if ($name_col !== false && isset($data[$name_col])) {
-                        $name = trim($data[$name_col]);
-                    } elseif ($first_name_col !== false && $last_name_col !== false) {
-                        $first = isset($data[$first_name_col]) ? trim($data[$first_name_col]) : '';
-                        $last = isset($data[$last_name_col]) ? trim($data[$last_name_col]) : '';
-                        $name = trim($first . ' ' . $last);
+                    $recipient = array();
+                    
+                    // Store all columns dynamically
+                    foreach ($cleaned_headers as $index => $column_name) {
+                        $value = isset($data[$index]) ? trim($data[$index]) : '';
+                        $recipient[$column_name] = $value;
                     }
                     
-                    $recipients[] = array(
-                        'email' => $email,
-                        'name' => $name,
-                        'first_name' => $first_name_col !== false && isset($data[$first_name_col]) ? trim($data[$first_name_col]) : '',
-                        'last_name' => $last_name_col !== false && isset($data[$last_name_col]) ? trim($data[$last_name_col]) : ''
-                    );
+                    // Ensure email is properly set
+                    $recipient['email'] = $email;
+                    
+                    // Generate standard fields for backward compatibility
+                    $recipient['name'] = $this->extract_name_field($recipient);
+                    $recipient['first_name'] = $this->extract_first_name($recipient);
+                    $recipient['last_name'] = $this->extract_last_name($recipient);
+                    
+                    $recipients[] = $recipient;
                 }
             }
             fclose($handle);
         }
         
         return $recipients;
+    }
+    
+    private function extract_name_field($recipient) {
+        // Priority order for name field
+        $name_fields = array('name', 'full_name', 'fullname', 'Name', 'Full Name');
+        
+        foreach ($name_fields as $field) {
+            if (!empty($recipient[$field])) {
+                return $recipient[$field];
+            }
+        }
+        
+        // Fallback: combine first and last name
+        $first = $this->extract_first_name($recipient);
+        $last = $this->extract_last_name($recipient);
+        return trim($first . ' ' . $last);
+    }
+    
+    private function extract_first_name($recipient) {
+        $first_name_fields = array('first_name', 'firstname', 'fname', 'First Name', 'FirstName');
+        
+        foreach ($first_name_fields as $field) {
+            if (!empty($recipient[$field])) {
+                return $recipient[$field];
+            }
+        }
+        
+        return '';
+    }
+    
+    private function extract_last_name($recipient) {
+        $last_name_fields = array('last_name', 'lastname', 'lname', 'Last Name', 'LastName');
+        
+        foreach ($last_name_fields as $field) {
+            if (!empty($recipient[$field])) {
+                return $recipient[$field];
+            }
+        }
+        
+        return '';
+    }
+    
+    private function get_list_columns($list_id) {
+        global $wpdb;
+        
+        $list = $wpdb->get_row($wpdb->prepare(
+            "SELECT recipients_data FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$list || !$list->recipients_data) {
+            return array();
+        }
+        
+        $recipients = json_decode($list->recipients_data, true);
+        if (empty($recipients)) {
+            return array();
+        }
+        
+        // Get all unique column names from the first recipient
+        $sample_recipient = $recipients[0];
+        $columns = array();
+        
+        foreach ($sample_recipient as $column_name => $value) {
+            // Skip internal fields
+            if (!in_array($column_name, array('email', 'name', 'first_name', 'last_name'))) {
+                $columns[] = $column_name;
+            }
+        }
+        
+        return $columns;
+    }
+    
+    private function get_all_available_columns() {
+        global $wpdb;
+        
+        $all_lists = $wpdb->get_results("SELECT recipients_data FROM {$wpdb->prefix}alumni_recipient_lists");
+        $all_columns = array();
+        
+        foreach ($all_lists as $list) {
+            if ($list->recipients_data) {
+                $recipients = json_decode($list->recipients_data, true);
+                if (!empty($recipients)) {
+                    $sample_recipient = $recipients[0];
+                    foreach ($sample_recipient as $column_name => $value) {
+                        if (!in_array($column_name, array('email', 'name', 'first_name', 'last_name'))) {
+                            $all_columns[$column_name] = true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        return array_keys($all_columns);
     }
     
     private function create_campaign_record($campaign_name, $subject, $html_content, $recipients_count, $recipients_data = null) {
@@ -2261,6 +2358,60 @@ class AlumniBulkEmail {
         exit;
     }
     
+    public function handle_view_recipient_list() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'view_recipient_list') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        
+        if (!$list_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid list ID')));
+            exit;
+        }
+        
+        global $wpdb;
+        $list = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$list) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'List not found')));
+            exit;
+        }
+        
+        $recipients = json_decode($list->recipients_data, true);
+        if (!$recipients) {
+            $recipients = array();
+        }
+        
+        // Get all column names from the first recipient
+        $columns = array();
+        if (!empty($recipients)) {
+            $columns = array_keys($recipients[0]);
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'list' => array(
+                    'id' => $list->id,
+                    'list_name' => $list->list_name,
+                    'total_count' => $list->total_count,
+                    'created_at' => $list->created_at,
+                    'updated_at' => $list->updated_at
+                ),
+                'recipients' => $recipients,
+                'columns' => $columns
+            )
+        ));
+        exit;
+    }
+    
     public function handle_recreate_tables() {
         header('Content-Type: application/json');
         
@@ -2591,12 +2742,16 @@ class AlumniBulkEmail {
     public function recipient_lists_page() {
         global $wpdb;
         $saved_lists = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}alumni_recipient_lists ORDER BY updated_at DESC");
+        $all_custom_columns = $this->get_all_available_columns();
         ?>
         <div class="wrap">
             <h1>📧 Recipients Lists</h1>
             
             <div class="notice notice-info">
                 <p><strong>Manage your recipient lists:</strong> View, edit, and delete saved recipient lists used in campaigns.</p>
+                <?php if (!empty($all_custom_columns)): ?>
+                    <p><strong>Available custom columns across all lists:</strong> <?php echo implode(', ', array_map('esc_html', $all_custom_columns)); ?></p>
+                <?php endif; ?>
             </div>
             
             <div style="margin: 20px 0;">
@@ -2641,16 +2796,33 @@ class AlumniBulkEmail {
                             <th scope="col" class="sortable" data-sort="updated_at">
                                 Last Updated <span class="sort-indicator"></span>
                             </th>
+                            <th scope="col">Custom Columns</th>
                             <th scope="col">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($saved_lists as $list): ?>
+                        <?php foreach ($saved_lists as $list): 
+                            $list_custom_columns = $this->get_list_columns($list->id);
+                        ?>
                             <tr>
                                 <td><strong><?php echo esc_html($list->list_name); ?></strong></td>
                                 <td><?php echo number_format($list->total_count); ?> recipients</td>
                                 <td><?php echo date('M j, Y g:i A', strtotime($list->created_at)); ?></td>
                                 <td><?php echo date('M j, Y g:i A', strtotime($list->updated_at)); ?></td>
+                                <td>
+                                    <?php if (!empty($list_custom_columns)): ?>
+                                        <span style="font-size: 12px; color: #666;">
+                                            <?php echo implode(', ', array_map('esc_html', array_slice($list_custom_columns, 0, 3))); ?>
+                                            <?php if (count($list_custom_columns) > 3): ?>
+                                                <span title="<?php echo esc_attr(implode(', ', $list_custom_columns)); ?>">
+                                                    +<?php echo count($list_custom_columns) - 3; ?> more
+                                                </span>
+                                            <?php endif; ?>
+                                        </span>
+                                    <?php else: ?>
+                                        <span style="color: #999; font-style: italic;">Standard fields only</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td>
                                     <button class="button view-list" data-list-id="<?php echo $list->id; ?>">View</button>
                                     <button class="button edit-list-name" data-list-id="<?php echo $list->id; ?>" data-current-name="<?php echo esc_attr($list->list_name); ?>">Rename</button>
@@ -2758,10 +2930,10 @@ class AlumniBulkEmail {
                 showCombineListsModal(listNames);
             });
             
-            // View list functionality will be implemented later
+            // View list with dynamic columns
             $('.view-list').click(function() {
                 var listId = $(this).data('list-id');
-                alert('View functionality coming soon for list ID: ' + listId);
+                showListView(listId);
             });
             
             // Rename list
@@ -3078,6 +3250,213 @@ class AlumniBulkEmail {
                         $('#save-combined-list').prop('disabled', false).text('Create Combined List');
                     }
                 });
+            }
+            
+            // Show dynamic list view
+            function showListView(listId) {
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'view_recipient_list',
+                        nonce: '<?php echo wp_create_nonce('view_recipient_list'); ?>',
+                        list_id: listId
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            var listData = response.data.list;
+                            var recipients = response.data.recipients;
+                            var columns = response.data.columns;
+                            
+                            showDynamicListModal(listData, recipients, columns);
+                        } else {
+                            alert('Error loading list: ' + response.data.message);
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while loading the list.');
+                    }
+                });
+            }
+            
+            // Show dynamic list modal with sortable/filterable table
+            function showDynamicListModal(listData, recipients, columns) {
+                var modalHtml = '<div id="dynamic-list-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000;">' +
+                    '<div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border-radius: 8px; width: 90%; max-width: 1200px; max-height: 90vh; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">' +
+                    '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #ddd; padding-bottom: 15px;">' +
+                    '<div>' +
+                    '<h2 style="margin: 0;">📋 ' + listData.list_name + '</h2>' +
+                    '<p style="margin: 5px 0 0 0; color: #666;">' + listData.total_count + ' recipients • Created: ' + new Date(listData.created_at).toLocaleDateString() + '</p>' +
+                    '</div>' +
+                    '<button type="button" id="close-dynamic-modal" class="button button-primary">Close</button>' +
+                    '</div>' +
+                    
+                    '<div style="margin-bottom: 15px;">' +
+                    '<input type="text" id="dynamic-search" placeholder="Search all columns..." style="width: 300px; padding: 8px;" />' +
+                    '<button type="button" id="clear-dynamic-search" class="button" style="margin-left: 10px;">Clear</button>' +
+                    '</div>' +
+                    
+                    '<div style="overflow: auto; max-height: 500px;">' +
+                    '<table id="dynamic-recipients-table" class="wp-list-table widefat fixed striped" style="margin: 0;">' +
+                    '<thead><tr>';
+                
+                // Add column headers
+                columns.forEach(function(column) {
+                    var displayName = column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                    modalHtml += '<th class="dynamic-sortable" data-column="' + column + '" style="cursor: pointer; position: relative; padding-right: 20px;">' +
+                                displayName + ' <span class="dynamic-sort-indicator" style="position: absolute; right: 5px;">↕</span></th>';
+                });
+                
+                modalHtml += '</tr></thead><tbody id="dynamic-recipients-body">';
+                
+                // Add data rows
+                recipients.forEach(function(recipient, index) {
+                    modalHtml += '<tr class="dynamic-recipient-row">';
+                    columns.forEach(function(column) {
+                        var value = recipient[column] || '';
+                        modalHtml += '<td>' + $('<div>').text(value).html() + '</td>'; // Escape HTML
+                    });
+                    modalHtml += '</tr>';
+                });
+                
+                modalHtml += '</tbody></table></div>' +
+                    '<div style="margin-top: 15px; text-align: right; border-top: 1px solid #ddd; padding-top: 15px;">' +
+                    '<span id="dynamic-filter-count" style="color: #666; margin-right: 20px;"></span>' +
+                    '<button type="button" id="create-filtered-sublist" class="button button-secondary" style="display: none;">Create Sublist from Results</button>' +
+                    '</div>' +
+                    '</div></div>';
+                
+                $('body').append(modalHtml);
+                
+                // Store data for sorting/filtering
+                window.dynamicListData = {
+                    listData: listData,
+                    recipients: recipients,
+                    columns: columns,
+                    filteredRecipients: recipients
+                };
+                
+                // Event handlers
+                $('#close-dynamic-modal').click(function() {
+                    $('#dynamic-list-modal').remove();
+                });
+                
+                $('#dynamic-search').on('input', function() {
+                    filterDynamicList($(this).val().toLowerCase());
+                });
+                
+                $('#clear-dynamic-search').click(function() {
+                    $('#dynamic-search').val('');
+                    filterDynamicList('');
+                });
+                
+                $('.dynamic-sortable').click(function() {
+                    var column = $(this).data('column');
+                    sortDynamicList(column);
+                });
+                
+                // Initial count
+                updateDynamicFilterCount();
+            }
+            
+            // Filter dynamic list
+            function filterDynamicList(searchTerm) {
+                var allRows = $('#dynamic-recipients-body tr');
+                var filteredRecipients = [];
+                var visibleCount = 0;
+                
+                allRows.each(function() {
+                    var row = $(this);
+                    var matches = false;
+                    
+                    row.find('td').each(function() {
+                        if ($(this).text().toLowerCase().includes(searchTerm)) {
+                            matches = true;
+                            return false; // Break loop
+                        }
+                    });
+                    
+                    if (matches || searchTerm === '') {
+                        row.show();
+                        visibleCount++;
+                        
+                        // Track filtered recipients for sublisting
+                        var recipientIndex = row.index();
+                        if (window.dynamicListData && window.dynamicListData.recipients[recipientIndex]) {
+                            filteredRecipients.push(window.dynamicListData.recipients[recipientIndex]);
+                        }
+                    } else {
+                        row.hide();
+                    }
+                });
+                
+                if (window.dynamicListData) {
+                    window.dynamicListData.filteredRecipients = filteredRecipients;
+                }
+                
+                updateDynamicFilterCount();
+                
+                // Show/hide create sublist button
+                if (searchTerm !== '' && visibleCount > 0 && visibleCount < window.dynamicListData.recipients.length) {
+                    $('#create-filtered-sublist').show();
+                } else {
+                    $('#create-filtered-sublist').hide();
+                }
+            }
+            
+            // Sort dynamic list
+            function sortDynamicList(column) {
+                var tbody = $('#dynamic-recipients-body');
+                var rows = tbody.find('tr').toArray();
+                var header = $('.dynamic-sortable[data-column="' + column + '"]');
+                
+                // Determine sort direction
+                var currentSort = header.hasClass('sort-asc') ? 'asc' : (header.hasClass('sort-desc') ? 'desc' : 'none');
+                var newSort = currentSort === 'asc' ? 'desc' : 'asc';
+                
+                // Update sort indicators
+                $('.dynamic-sortable').removeClass('sort-asc sort-desc');
+                $('.dynamic-sort-indicator').text('↕');
+                
+                header.addClass('sort-' + newSort);
+                header.find('.dynamic-sort-indicator').text(newSort === 'asc' ? '↑' : '↓');
+                
+                // Get column index
+                var columnIndex = window.dynamicListData.columns.indexOf(column);
+                
+                // Sort rows
+                rows.sort(function(a, b) {
+                    var aVal = $(a).find('td:eq(' + columnIndex + ')').text().toLowerCase();
+                    var bVal = $(b).find('td:eq(' + columnIndex + ')').text().toLowerCase();
+                    
+                    // Try to parse as numbers if possible
+                    var aNum = parseFloat(aVal);
+                    var bNum = parseFloat(bVal);
+                    
+                    if (!isNaN(aNum) && !isNaN(bNum)) {
+                        return newSort === 'asc' ? aNum - bNum : bNum - aNum;
+                    } else {
+                        if (newSort === 'asc') {
+                            return aVal > bVal ? 1 : (aVal < bVal ? -1 : 0);
+                        } else {
+                            return aVal < bVal ? 1 : (aVal > bVal ? -1 : 0);
+                        }
+                    }
+                });
+                
+                tbody.empty().append(rows);
+            }
+            
+            // Update filter count
+            function updateDynamicFilterCount() {
+                var totalCount = window.dynamicListData ? window.dynamicListData.recipients.length : 0;
+                var visibleCount = $('#dynamic-recipients-body tr:visible').length;
+                
+                if (visibleCount === totalCount) {
+                    $('#dynamic-filter-count').text('Showing all ' + totalCount + ' recipients');
+                } else {
+                    $('#dynamic-filter-count').text('Showing ' + visibleCount + ' of ' + totalCount + ' recipients');
+                }
             }
         });
         </script>
