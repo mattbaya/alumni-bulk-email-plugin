@@ -679,6 +679,557 @@ class Alumni_Ajax_Handlers {
         return $recipients;
     }
     
-    // Additional handlers would continue here...
-    // (I'll include the remaining handlers in the implementation)
+    /**
+     * Send test campaign
+     */
+    public function handle_test_campaign() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'send_test_campaign') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $campaign_id = intval($_POST['campaign_id']);
+            $test_email = sanitize_email($_POST['test_email']);
+            
+            if (!$campaign_id || !$test_email) {
+                throw new Exception('Missing campaign ID or test email');
+            }
+            
+            $campaign = $this->campaign_manager->get_campaign($campaign_id);
+            $result = $this->campaign_manager->send_test_email($test_email, $campaign->subject, $campaign->content);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array('message' => 'Test email sent successfully!')
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Create recipient list
+     */
+    public function handle_create_recipient_list() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'create_recipient_list') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $list_name = sanitize_text_field($_POST['list_name']);
+            $description = sanitize_textarea_field($_POST['description']);
+            $recipients_json = sanitize_textarea_field($_POST['recipients']);
+            
+            if (empty($list_name) || empty($recipients_json)) {
+                throw new Exception('List name and recipients are required');
+            }
+            
+            $recipients = json_decode($recipients_json, true);
+            if (!is_array($recipients)) {
+                throw new Exception('Invalid recipients data');
+            }
+            
+            $list_id = $this->list_manager->create_list($list_name, $recipients, $description);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => 'List created successfully',
+                    'list_id' => $list_id
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Combine recipient lists
+     */
+    public function handle_combine_recipient_lists() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'combine_recipient_lists') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $target_list_id = intval($_POST['target_list_id']);
+            $source_list_ids = array_map('intval', $_POST['source_list_ids']);
+            
+            if (!$target_list_id || empty($source_list_ids)) {
+                throw new Exception('Target list and source lists are required');
+            }
+            
+            // Get all source recipients
+            $all_recipients = array();
+            foreach ($source_list_ids as $source_id) {
+                $source_list = $this->list_manager->get_list($source_id);
+                $all_recipients = array_merge($all_recipients, $source_list->recipients);
+            }
+            
+            // Merge with target list
+            $result = $this->list_manager->merge_lists($target_list_id, $all_recipients);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => "Lists combined successfully. {$result['new_recipients']} new recipients added, {$result['duplicates_removed']} duplicates removed.",
+                    'total_recipients' => $result['total_recipients']
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * View recipient list details
+     */
+    public function handle_view_recipient_list() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'view_recipient_list') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $list_id = intval($_POST['list_id']);
+            $page = intval($_POST['page']) ?: 1;
+            $per_page = intval($_POST['per_page']) ?: 50;
+            $search = sanitize_text_field($_POST['search']) ?: '';
+            
+            if (!$list_id) {
+                throw new Exception('Invalid list ID');
+            }
+            
+            $list = $this->list_manager->get_list($list_id);
+            $recipients = $list->recipients;
+            
+            // Apply search filter if provided
+            if ($search) {
+                $recipients = $this->list_manager->search_recipients($list_id, $search);
+            }
+            
+            // Calculate pagination
+            $total = count($recipients);
+            $offset = ($page - 1) * $per_page;
+            $paged_recipients = array_slice($recipients, $offset, $per_page);
+            
+            // Get list statistics
+            $stats = $this->list_manager->get_list_stats($list_id);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'list' => array(
+                        'id' => $list->id,
+                        'name' => $list->list_name,
+                        'description' => $list->description
+                    ),
+                    'recipients' => $paged_recipients,
+                    'pagination' => array(
+                        'page' => $page,
+                        'per_page' => $per_page,
+                        'total' => $total,
+                        'pages' => ceil($total / $per_page)
+                    ),
+                    'stats' => $stats,
+                    'columns' => $this->list_manager->get_list_columns($list_id)
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Edit recipient row
+     */
+    public function handle_edit_recipient_row() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'edit_recipient_row') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $list_id = intval($_POST['list_id']);
+            $row_index = intval($_POST['row_index']);
+            $updated_data = $_POST['recipient_data']; // Should be sanitized array
+            
+            if (!$list_id || $row_index < 0) {
+                throw new Exception('Invalid list ID or row index');
+            }
+            
+            // Sanitize updated data
+            $sanitized_data = array();
+            foreach ($updated_data as $key => $value) {
+                $sanitized_data[sanitize_key($key)] = sanitize_text_field($value);
+            }
+            
+            // Get current list
+            $list = $this->list_manager->get_list($list_id);
+            $recipients = $list->recipients;
+            
+            if (!isset($recipients[$row_index])) {
+                throw new Exception('Recipient not found');
+            }
+            
+            // Update the recipient data
+            foreach ($sanitized_data as $field => $value) {
+                $recipients[$row_index][$field] = $value;
+            }
+            
+            // Save updated list
+            $this->list_manager->update_list($list_id, $recipients);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array('message' => 'Recipient updated successfully')
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Bulk edit recipients
+     */
+    public function handle_bulk_edit_recipients() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'bulk_edit_recipients') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $list_id = intval($_POST['list_id']);
+            $recipient_indices = array_map('intval', $_POST['recipient_indices']);
+            $updates = $_POST['updates']; // Should be sanitized array
+            
+            if (!$list_id || empty($recipient_indices)) {
+                throw new Exception('List ID and recipient indices are required');
+            }
+            
+            // Sanitize updates
+            $sanitized_updates = array();
+            foreach ($updates as $field => $value) {
+                $sanitized_updates[sanitize_key($field)] = sanitize_text_field($value);
+            }
+            
+            $updated_count = $this->list_manager->bulk_edit_recipients($list_id, $recipient_indices, $sanitized_updates);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => "{$updated_count} recipients updated successfully",
+                    'updated_count' => $updated_count
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Bulk delete recipients
+     */
+    public function handle_bulk_delete_recipients() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'bulk_delete_recipients') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $list_id = intval($_POST['list_id']);
+            $recipient_indices = array_map('intval', $_POST['recipient_indices']);
+            
+            if (!$list_id || empty($recipient_indices)) {
+                throw new Exception('List ID and recipient indices are required');
+            }
+            
+            $deleted_count = $this->list_manager->bulk_delete_recipients($list_id, $recipient_indices);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => "{$deleted_count} recipients deleted successfully",
+                    'deleted_count' => $deleted_count
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Get list columns
+     */
+    public function handle_get_list_columns() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'get_list_columns') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $list_id = intval($_POST['list_id']);
+            
+            if (!$list_id) {
+                throw new Exception('Invalid list ID');
+            }
+            
+            $columns = $this->list_manager->get_list_columns($list_id);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array('columns' => $columns)
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Merge CSV to existing list
+     */
+    public function handle_merge_csv_to_list() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'merge_csv_to_list') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $list_id = intval($_POST['list_id']);
+            
+            if (!$list_id) {
+                throw new Exception('Invalid list ID');
+            }
+            
+            if (!isset($_FILES['csv_file'])) {
+                throw new Exception('No file uploaded');
+            }
+            
+            $this->file_processor->validate_file_upload($_FILES['csv_file']);
+            $new_recipients = $this->file_processor->parse_file($_FILES['csv_file']['tmp_name'], null);
+            
+            if (empty($new_recipients)) {
+                throw new Exception('No valid recipients found in file');
+            }
+            
+            $result = $this->list_manager->merge_lists($list_id, $new_recipients);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => "File merged successfully. {$result['new_recipients']} new recipients added, {$result['duplicates_removed']} duplicates removed.",
+                    'total_recipients' => $result['total_recipients'],
+                    'new_recipients' => $result['new_recipients'],
+                    'duplicates_removed' => $result['duplicates_removed']
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Create sublist from results
+     */
+    public function handle_create_sublist_from_results() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'create_sublist_from_results') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $list_id = intval($_POST['list_id']);
+            $sublist_name = sanitize_text_field($_POST['sublist_name']);
+            $filtered_recipients_json = sanitize_textarea_field($_POST['filtered_recipients']);
+            
+            if (!$list_id || empty($sublist_name) || empty($filtered_recipients_json)) {
+                throw new Exception('Missing required data');
+            }
+            
+            $filtered_recipients = json_decode($filtered_recipients_json, true);
+            if (empty($filtered_recipients) || !is_array($filtered_recipients)) {
+                throw new Exception('Invalid recipients data');
+            }
+            
+            $new_list_id = $this->list_manager->create_sublist_from_results($sublist_name, $filtered_recipients, $list_id);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => 'Sublist "' . $sublist_name . '" created successfully with ' . count($filtered_recipients) . ' recipients',
+                    'list_id' => $new_list_id,
+                    'list_name' => $sublist_name
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error creating sublist: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Save header/footer template
+     */
+    public function handle_save_header_footer() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'save_header_footer') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            // Note: Headers/Footers functionality is planned for future implementation
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Headers & Footers management coming soon in next update')
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Delete header/footer template
+     */
+    public function handle_delete_header_footer() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'delete_header_footer') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            // Note: Headers/Footers functionality is planned for future implementation
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Headers & Footers management coming soon in next update')
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Set default header/footer template
+     */
+    public function handle_set_default_header_footer() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'set_default_header_footer') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            // Note: Headers/Footers functionality is planned for future implementation
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Headers & Footers management coming soon in next update')
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
 }

@@ -39,7 +39,7 @@ class Alumni_File_Processor {
         $recipients = array();
         
         if (($handle = fopen($file_path, "r")) !== FALSE) {
-            $header = fgetcsv($handle, 1000, ",");
+            $header = fgetcsv($handle, 1000, ",", '"', "\\");
             if (!$header) {
                 fclose($handle);
                 return $recipients;
@@ -60,7 +60,7 @@ class Alumni_File_Processor {
             
             $row_count = 0;
             $valid_recipients = 0;
-            while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
+            while (($data = fgetcsv($handle, 1000, ",", '"', "\\")) !== FALSE) {
                 $row_count++;
                 
                 // Debug log each row
@@ -203,7 +203,7 @@ class Alumni_File_Processor {
         $output = fopen('php://temp', 'w');
         
         // Write headers
-        fputcsv($output, $headers);
+        fputcsv($output, $headers, ",", '"', "\\");
         
         // Write data rows
         foreach ($recipients as $recipient) {
@@ -211,7 +211,7 @@ class Alumni_File_Processor {
             foreach ($headers as $header) {
                 $row[] = isset($recipient[$header]) ? $recipient[$header] : '';
             }
-            fputcsv($output, $row);
+            fputcsv($output, $row, ",", '"', "\\");
         }
         
         rewind($output);
