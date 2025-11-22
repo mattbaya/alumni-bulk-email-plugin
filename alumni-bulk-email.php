@@ -33,6 +33,7 @@ require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-email-service.php';
 require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-list-manager.php';
 require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-campaign-manager.php';
 require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-header-footer-manager.php';
+require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-typography-preset-manager.php';
 require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-ajax-handlers.php';
 
 // Main plugin class
@@ -211,6 +212,11 @@ class AlumniBulkEmail {
         $templates = $header_footer_manager->get_all_templates();
         $stats = $header_footer_manager->get_template_stats();
         
+        // Load typography preset manager for typography options
+        $typography_preset_manager = new Alumni_Typography_Preset_Manager();
+        $typography_presets = $typography_preset_manager->get_all_presets();
+        $preset_stats = $typography_preset_manager->get_preset_stats();
+        
         ?>
         <div class="template-management">
             <!-- Template Statistics -->
@@ -260,6 +266,47 @@ class AlumniBulkEmail {
                         <tr>
                             <th><label for="template-typography">Typography</label></th>
                             <td>
+                                <!-- Typography Presets Section -->
+                                <div style="margin-bottom: 20px; padding: 15px; background: #f8f8f9; border: 1px solid #e1e1e1; border-radius: 5px;">
+                                    <h4 style="margin: 0 0 10px 0;">Typography Presets</h4>
+                                    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                                        <select id="typography-preset-selector" style="min-width: 200px;">
+                                            <option value="">Choose a preset...</option>
+                                            <?php foreach ($typography_presets as $preset): ?>
+                                                <option value="<?php echo $preset->id; ?>" 
+                                                        data-font-family="<?php echo esc_attr($preset->font_family); ?>"
+                                                        data-font-size="<?php echo esc_attr($preset->font_size); ?>"
+                                                        data-text-color="<?php echo esc_attr($preset->text_color); ?>">
+                                                    <?php echo esc_html($preset->name); ?>
+                                                    <?php if ($preset->is_default): ?>
+                                                        (Default)
+                                                    <?php endif; ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <button type="button" class="button button-small" onclick="loadPreset()">Load Preset</button>
+                                        <button type="button" class="button button-small" onclick="showSavePresetForm()">Save Current as Preset</button>
+                                    </div>
+                                    
+                                    <!-- Save Preset Form (Hidden by default) -->
+                                    <div id="save-preset-form" style="display: none; margin-top: 15px; padding: 15px; background: white; border: 1px solid #ddd; border-radius: 3px;">
+                                        <h5>Save Typography Preset</h5>
+                                        <div style="margin-bottom: 10px;">
+                                            <label for="preset-name">Preset Name:</label>
+                                            <input type="text" id="preset-name" placeholder="e.g., Bold Header Style" style="width: 250px; margin-left: 10px;">
+                                        </div>
+                                        <div style="margin-bottom: 10px;">
+                                            <label for="preset-description">Description (optional):</label>
+                                            <input type="text" id="preset-description" placeholder="Brief description of this style" style="width: 300px; margin-left: 10px;">
+                                        </div>
+                                        <div>
+                                            <button type="button" class="button button-primary" onclick="savePreset()">Save Preset</button>
+                                            <button type="button" class="button" onclick="hideSavePresetForm()">Cancel</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Manual Typography Controls -->
                                 <div style="display: flex; gap: 15px; margin-bottom: 15px;">
                                     <div>
                                         <label for="template-font-family" style="display: block; margin-bottom: 5px; font-weight: 600;">Font Family:</label>
@@ -303,7 +350,7 @@ class AlumniBulkEmail {
                                     <button type="button" class="button button-small" onclick="applyTypography()" style="margin-right: 10px;">Apply Typography to Content</button>
                                     <button type="button" class="button button-small" onclick="resetTypography()">Reset to Default</button>
                                 </div>
-                                <p class="description">Select typography settings and click "Apply Typography" to update your template content, or manually edit in the rich text editor below.</p>
+                                <p class="description">Use presets for quick styling, or manually select typography settings and click "Apply Typography" to update your template content.</p>
                             </td>
                         </tr>
                         <tr>
@@ -547,6 +594,159 @@ class AlumniBulkEmail {
                 alert('Error: ' + error);
             });
         });
+
+        // Typography preset functions
+        function loadPreset() {
+            const selector = document.getElementById('typography-preset-selector');
+            const selectedOption = selector.options[selector.selectedIndex];
+            
+            if (!selectedOption.value) {
+                alert('Please select a preset to load.');
+                return;
+            }
+            
+            // Load preset values into typography controls
+            const fontFamily = selectedOption.getAttribute('data-font-family');
+            const fontSize = selectedOption.getAttribute('data-font-size');
+            const textColor = selectedOption.getAttribute('data-text-color');
+            
+            if (fontFamily) document.getElementById('template-font-family').value = fontFamily;
+            if (fontSize) document.getElementById('template-font-size').value = fontSize;
+            if (textColor) document.getElementById('template-text-color').value = textColor;
+            
+            // Apply the typography to the content
+            applyTypography();
+        }
+
+        function showSavePresetForm() {
+            document.getElementById('save-preset-form').style.display = 'block';
+        }
+
+        function hideSavePresetForm() {
+            document.getElementById('save-preset-form').style.display = 'none';
+            document.getElementById('preset-name').value = '';
+            document.getElementById('preset-description').value = '';
+        }
+
+        function savePreset() {
+            const presetName = document.getElementById('preset-name').value.trim();
+            if (!presetName) {
+                alert('Please enter a name for the preset.');
+                return;
+            }
+            
+            const fontFamily = document.getElementById('template-font-family').value;
+            const fontSize = document.getElementById('template-font-size').value;
+            const textColor = document.getElementById('template-text-color').value;
+            const description = document.getElementById('preset-description').value.trim();
+            
+            const data = new FormData();
+            data.append('action', 'save_typography_preset');
+            data.append('nonce', '<?php echo wp_create_nonce("save_typography_preset"); ?>');
+            data.append('name', presetName);
+            data.append('font_family', fontFamily);
+            data.append('font_size', fontSize);
+            data.append('text_color', textColor);
+            data.append('description', description);
+
+            fetch(ajaxurl, {
+                method: 'POST',
+                body: data
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    alert('Typography preset saved successfully!');
+                    hideSavePresetForm();
+                    // Reload the page to refresh the presets dropdown
+                    location.reload();
+                } else {
+                    alert('Error: ' + result.data.message);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+
+        // Typography application functions
+        function applyTypography() {
+            const fontFamily = document.getElementById('template-font-family').value;
+            const fontSize = document.getElementById('template-font-size').value;
+            const textColor = document.getElementById('template-text-color').value;
+            
+            // Get content from editor
+            let content = '';
+            if (typeof tinyMCE !== 'undefined' && tinyMCE.get('template-content')) {
+                content = tinyMCE.get('template-content').getContent();
+            } else {
+                const textarea = document.getElementById('template-content');
+                if (textarea) {
+                    content = textarea.value;
+                }
+            }
+            
+            if (!content.trim()) {
+                alert('Please add some content first before applying typography.');
+                return;
+            }
+            
+            // Build CSS styles
+            const styles = [];
+            if (fontFamily) styles.push('font-family: ' + fontFamily);
+            if (fontSize) styles.push('font-size: ' + fontSize);
+            if (textColor && textColor !== '#000000') styles.push('color: ' + textColor);
+            
+            // Apply styles to content
+            if (styles.length > 0) {
+                const styleString = styles.join('; ');
+                const styledContent = '<div style="' + styleString + '">' + content + '</div>';
+                
+                // Set content back to editor
+                if (typeof tinyMCE !== 'undefined' && tinyMCE.get('template-content')) {
+                    tinyMCE.get('template-content').setContent(styledContent);
+                } else {
+                    const textarea = document.getElementById('template-content');
+                    if (textarea) {
+                        textarea.value = styledContent;
+                    }
+                }
+                
+                alert('Typography applied to content successfully!');
+            } else {
+                alert('Please select typography settings first.');
+            }
+        }
+
+        function resetTypography() {
+            document.getElementById('template-font-family').value = '';
+            document.getElementById('template-font-size').value = '';
+            document.getElementById('template-text-color').value = '#000000';
+            document.getElementById('typography-preset-selector').value = '';
+        }
+
+        function loadTypographyFromTemplate(template) {
+            // Extract typography settings from template content
+            if (!template.content) return;
+            
+            // Look for font-family in content
+            const fontFamilyMatch = template.content.match(/font-family:\s*([^;]+)/i);
+            if (fontFamilyMatch) {
+                document.getElementById('template-font-family').value = fontFamilyMatch[1].trim();
+            }
+            
+            // Look for font-size in content  
+            const fontSizeMatch = template.content.match(/font-size:\s*(\d+px)/i);
+            if (fontSizeMatch) {
+                document.getElementById('template-font-size').value = fontSizeMatch[1];
+            }
+            
+            // Look for color in content
+            const colorMatch = template.content.match(/color:\s*(#[a-fA-F0-9]{6}|#[a-fA-F0-9]{3})/i);
+            if (colorMatch) {
+                document.getElementById('template-text-color').value = colorMatch[1];
+            }
+        }
         </script>
         <?php
         
@@ -583,6 +783,10 @@ class AlumniBulkEmail {
         $header_footer_manager = new Alumni_Header_Footer_Manager();
         $headers = $header_footer_manager->get_all_templates('header');
         $footers = $header_footer_manager->get_all_templates('footer');
+        
+        // Get typography presets
+        $typography_preset_manager = new Alumni_Typography_Preset_Manager();
+        $typography_presets = $typography_preset_manager->get_all_presets();
         
         ?>
         <form id="bulk-email-form" enctype="multipart/form-data">
@@ -766,7 +970,28 @@ class AlumniBulkEmail {
                         <span id="test_email_status" style="margin-left: 10px;"></span>
                     </p>
                     
-                    <h4 style="margin-top: 30px;">Campaign Actions</h4>
+                    <h4 style="margin-top: 30px;">Campaign Management</h4>
+                    <p>
+                        <strong>Load Saved Campaign:</strong><br>
+                        <?php
+                        $all_campaigns = $this->campaign_manager->get_all_campaigns();
+                        $saved_campaigns = array_filter($all_campaigns, function($campaign) {
+                            return $campaign->status === 'draft';
+                        });
+                        if (!empty($saved_campaigns)): ?>
+                            <select id="load_campaign_select" style="min-width: 250px;">
+                                <option value="">Choose a saved campaign...</option>
+                                <?php foreach ($saved_campaigns as $campaign): ?>
+                                    <option value="<?php echo $campaign->id; ?>"><?php echo esc_html($campaign->campaign_name); ?> (<?php echo date('M j, Y', strtotime($campaign->created_at)); ?>)</option>
+                                <?php endforeach; ?>
+                            </select>
+                            <button type="button" id="load_campaign" class="button">Load Campaign</button>
+                        <?php else: ?>
+                            <em>No saved campaigns found.</em>
+                        <?php endif; ?>
+                    </p>
+                    
+                    <h4 style="margin-top: 20px;">Campaign Actions</h4>
                     <p>
                         <button type="button" id="save_campaign" class="button button-secondary">Save Campaign</button>
                         <button type="submit" id="send_campaign" class="button button-primary">Send Campaign Now</button>
@@ -812,14 +1037,44 @@ class AlumniBulkEmail {
             $('#send_test_email').click(function() {
                 var testEmail = $('#test_email_address').val();
                 var subject = $('#subject').val();
-                var content = $('#email_content').val();
+                var content = '';
                 
+                // Get content from the selected method
+                if ($('input[name="content_method"]:checked').val() === 'compose') {
+                    // Get content from TinyMCE editor
+                    if (typeof tinyMCE !== 'undefined' && tinyMCE.get('email_content')) {
+                        content = tinyMCE.get('email_content').getContent();
+                    } else {
+                        // Fallback to textarea if TinyMCE not available
+                        content = $('#email_content').val();
+                    }
+                } else {
+                    // For uploaded HTML files, get the file content
+                    var htmlFile = document.getElementById('html_file');
+                    if (htmlFile && htmlFile.files.length > 0) {
+                        var reader = new FileReader();
+                        reader.onload = function(e) {
+                            content = e.target.result;
+                            sendTestEmail(testEmail, subject, content);
+                        };
+                        reader.readAsText(htmlFile.files[0]);
+                        return; // Exit here, sendTestEmail will be called from FileReader
+                    } else {
+                        alert('Please select an HTML file first');
+                        return;
+                    }
+                }
+                
+                sendTestEmail(testEmail, subject, content);
+            });
+            
+            function sendTestEmail(testEmail, subject, content) {
                 if (!testEmail || !subject || !content) {
                     alert('Please fill in test email, subject, and content');
                     return;
                 }
                 
-                var button = $(this);
+                var button = $('#send_test_email');
                 button.prop('disabled', true).text('Sending...');
                 
                 $.post(ajaxurl, {
@@ -836,6 +1091,104 @@ class AlumniBulkEmail {
                 }).always(function() {
                     button.prop('disabled', false).text('Send Test Email');
                 });
+            }
+            
+            // Preview HTML file
+            $('#preview_html_file').click(function() {
+                var htmlFile = document.getElementById('html_file');
+                if (htmlFile && htmlFile.files.length > 0) {
+                    var reader = new FileReader();
+                    reader.onload = function(e) {
+                        var htmlContent = e.target.result;
+                        $('#html_preview').html('<h4>HTML Preview:</h4><div style="border: 1px solid #ddd; padding: 10px; max-height: 400px; overflow-y: auto; background: white;">' + htmlContent + '</div>');
+                    };
+                    reader.readAsText(htmlFile.files[0]);
+                } else {
+                    alert('Please select an HTML file first');
+                }
+            });
+            
+            // Save Campaign
+            $('#save_campaign').click(function() {
+                var campaignName = $('#campaign_name').val();
+                var subject = $('#subject').val();
+                var content = '';
+                
+                // Get content from TinyMCE editor
+                if (typeof tinyMCE !== 'undefined' && tinyMCE.get('email_content')) {
+                    content = tinyMCE.get('email_content').getContent();
+                } else {
+                    content = $('#email_content').val();
+                }
+                
+                if (!campaignName || !subject || !content) {
+                    alert('Please fill in campaign name, subject, and content before saving');
+                    return;
+                }
+                
+                var button = $(this);
+                button.prop('disabled', true).text('Saving...');
+                
+                $.post(ajaxurl, {
+                    action: 'save_campaign',
+                    nonce: '<?php echo wp_create_nonce('save_campaign'); ?>',
+                    campaign_name: campaignName,
+                    subject: subject,
+                    content: content
+                }).done(function(response) {
+                    if (response.success) {
+                        alert('Campaign saved successfully!');
+                        // Reload the page to refresh the load campaign dropdown
+                        window.location.reload();
+                    } else {
+                        alert('Error saving campaign: ' + response.data.message);
+                    }
+                }).always(function() {
+                    button.prop('disabled', false).text('Save Campaign');
+                });
+            });
+            
+            // Load Campaign
+            $('#load_campaign').click(function() {
+                var campaignId = $('#load_campaign_select').val();
+                if (!campaignId) {
+                    alert('Please select a campaign to load');
+                    return;
+                }
+                
+                if (!confirm('Loading a campaign will replace your current form data. Continue?')) {
+                    return;
+                }
+                
+                var button = $(this);
+                button.prop('disabled', true).text('Loading...');
+                
+                $.post(ajaxurl, {
+                    action: 'load_campaign',
+                    nonce: '<?php echo wp_create_nonce('load_campaign'); ?>',
+                    campaign_id: campaignId
+                }).done(function(response) {
+                    if (response.success) {
+                        var campaign = response.data.campaign;
+                        
+                        // Populate form fields
+                        $('#campaign_name').val(campaign.campaign_name);
+                        $('#subject').val(campaign.subject);
+                        
+                        // Set content in TinyMCE editor
+                        if (typeof tinyMCE !== 'undefined' && tinyMCE.get('email_content')) {
+                            tinyMCE.get('email_content').setContent(campaign.content);
+                        } else {
+                            $('#email_content').val(campaign.content);
+                        }
+                        
+                        alert('Campaign loaded successfully!');
+                    } else {
+                        alert('Error loading campaign: ' + response.data.message);
+                    }
+                }).always(function() {
+                    button.prop('disabled', false).text('Load Campaign');
+                });
             });
             
             // Form submission
@@ -844,6 +1197,11 @@ class AlumniBulkEmail {
                 
                 if (!confirm('Are you sure you want to send this campaign?')) {
                     return;
+                }
+                
+                // Sync TinyMCE content before submitting
+                if (typeof tinyMCE !== 'undefined' && tinyMCE.get('email_content')) {
+                    tinyMCE.get('email_content').save();
                 }
                 
                 var formData = new FormData(this);
@@ -1152,6 +1510,12 @@ class AlumniBulkEmail {
         $from_email = get_option('alumni_bulk_email_from_email', '');
         $from_name = get_option('alumni_bulk_email_from_name', '');
         
+        // Debug: Log current settings for troubleshooting
+        error_log('Alumni Bulk Email - Current settings loaded: API Key=' . (!empty($mailgun_api_key) ? 'SET' : 'EMPTY') . 
+                  ', Domain=' . (!empty($mailgun_domain) ? 'SET' : 'EMPTY') . 
+                  ', From Email=' . (!empty($from_email) ? 'SET' : 'EMPTY') . 
+                  ', From Name=' . (!empty($from_name) ? 'SET' : 'EMPTY'));
+        
         ?>
         <form method="post" action="">
             <?php wp_nonce_field('save_alumni_settings', 'settings_nonce'); ?>
@@ -1198,6 +1562,32 @@ class AlumniBulkEmail {
         </form>
         
         <div class="postbox">
+            <h2 class="hndle">Settings Verification</h2>
+            <div class="inside">
+                <p>Current settings status:</p>
+                <table class="form-table">
+                    <tr>
+                        <th>Mailgun API Key</th>
+                        <td><?php echo !empty($mailgun_api_key) ? '<span style="color: green;">✓ Set</span>' : '<span style="color: red;">✗ Empty</span>'; ?></td>
+                    </tr>
+                    <tr>
+                        <th>Mailgun Domain</th>
+                        <td><?php echo !empty($mailgun_domain) ? '<span style="color: green;">✓ Set</span>' : '<span style="color: red;">✗ Empty</span>'; ?></td>
+                    </tr>
+                    <tr>
+                        <th>From Email</th>
+                        <td><?php echo !empty($from_email) ? '<span style="color: green;">✓ Set (' . esc_html($from_email) . ')</span>' : '<span style="color: red;">✗ Empty</span>'; ?></td>
+                    </tr>
+                    <tr>
+                        <th>From Name</th>
+                        <td><?php echo !empty($from_name) ? '<span style="color: green;">✓ Set (' . esc_html($from_name) . ')</span>' : '<span style="color: red;">✗ Empty</span>'; ?></td>
+                    </tr>
+                </table>
+                <p class="description">Check your error logs for detailed troubleshooting information.</p>
+            </div>
+        </div>
+        
+        <div class="postbox">
             <h2 class="hndle">Database Management</h2>
             <div class="inside">
                 <p>If you're experiencing database issues, you can recreate the plugin tables:</p>
@@ -1234,10 +1624,21 @@ class AlumniBulkEmail {
      * Save settings
      */
     private function save_settings() {
-        update_option('alumni_bulk_email_mailgun_api_key', sanitize_text_field($_POST['mailgun_api_key']));
-        update_option('alumni_bulk_email_mailgun_domain', sanitize_text_field($_POST['mailgun_domain']));
-        update_option('alumni_bulk_email_from_email', sanitize_email($_POST['from_email']));
-        update_option('alumni_bulk_email_from_name', sanitize_text_field($_POST['from_name']));
+        $api_key = sanitize_text_field($_POST['mailgun_api_key']);
+        $domain = sanitize_text_field($_POST['mailgun_domain']);
+        $from_email = sanitize_email($_POST['from_email']);
+        $from_name = sanitize_text_field($_POST['from_name']);
+        
+        update_option('alumni_bulk_email_mailgun_api_key', $api_key);
+        update_option('alumni_bulk_email_mailgun_domain', $domain);
+        update_option('alumni_bulk_email_from_email', $from_email);
+        update_option('alumni_bulk_email_from_name', $from_name);
+        
+        // Debug: Log settings save
+        error_log('Alumni Bulk Email - Settings saved: API Key=' . (!empty($api_key) ? 'SET' : 'EMPTY') . 
+                  ', Domain=' . (!empty($domain) ? 'SET' : 'EMPTY') . 
+                  ', From Email=' . (!empty($from_email) ? 'SET' : 'EMPTY') . 
+                  ', From Name=' . (!empty($from_name) ? 'SET' : 'EMPTY'));
     }
     
     /**
@@ -1260,6 +1661,10 @@ new AlumniBulkEmail();
 // Activation and deactivation hooks
 register_activation_hook(__FILE__, function() {
     Alumni_Database::create_tables();
+    
+    // Create default typography presets
+    $typography_preset_manager = new Alumni_Typography_Preset_Manager();
+    $typography_preset_manager->create_default_presets();
 });
 
 register_deactivation_hook(__FILE__, function() {

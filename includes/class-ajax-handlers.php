@@ -16,6 +16,7 @@ class Alumni_Ajax_Handlers {
     private $list_manager;
     private $campaign_manager;
     private $header_footer_manager;
+    private $typography_preset_manager;
     
     public function __construct() {
         $this->file_processor = new Alumni_File_Processor();
@@ -23,6 +24,7 @@ class Alumni_Ajax_Handlers {
         $this->list_manager = new Alumni_List_Manager($this->file_processor, $this->email_service);
         $this->campaign_manager = new Alumni_Campaign_Manager($this->email_service, $this->list_manager);
         $this->header_footer_manager = new Alumni_Header_Footer_Manager();
+        $this->typography_preset_manager = new Alumni_Typography_Preset_Manager();
     }
     
     /**
@@ -63,6 +65,7 @@ class Alumni_Ajax_Handlers {
         add_action('wp_ajax_delete_header_footer', array($this, 'handle_delete_header_footer'));
         add_action('wp_ajax_set_default_header_footer', array($this, 'handle_set_default_header_footer'));
         add_action('wp_ajax_duplicate_template', array($this, 'handle_duplicate_template'));
+        add_action('wp_ajax_save_typography_preset', array($this, 'handle_save_typography_preset'));
         
         // Utility handlers
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -178,8 +181,14 @@ class Alumni_Ajax_Handlers {
             $campaign_name = sanitize_text_field($_POST['campaign_name']);
             $recipients_source = sanitize_text_field($_POST['recipients_source']);
             
-            if (!$subject || !$content || !$campaign_name) {
-                throw new Exception('Missing required fields');
+            // Detailed validation with specific error messages
+            $missing_fields = array();
+            if (!$subject) $missing_fields[] = 'subject';
+            if (!$content) $missing_fields[] = 'content';
+            if (!$campaign_name) $missing_fields[] = 'campaign name';
+            
+            if (!empty($missing_fields)) {
+                throw new Exception('Missing required fields: ' . implode(', ', $missing_fields));
             }
             
             $recipients = array();
@@ -1390,6 +1399,54 @@ class Alumni_Ajax_Handlers {
                 'data' => array(
                     'message' => 'Template duplicated successfully',
                     'template_id' => $new_template_id
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Save typography preset
+     */
+    public function handle_save_typography_preset() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'save_typography_preset') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $name = sanitize_text_field($_POST['name']);
+            $font_family = sanitize_text_field($_POST['font_family']);
+            $font_size = sanitize_text_field($_POST['font_size']);
+            $text_color = sanitize_text_field($_POST['text_color']);
+            $description = sanitize_textarea_field($_POST['description']);
+            
+            if (!$name) {
+                throw new Exception('Preset name is required');
+            }
+            
+            $preset_id = $this->typography_preset_manager->save_preset(
+                $name, 
+                $font_family, 
+                $font_size, 
+                $text_color, 
+                $description
+            );
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => 'Typography preset saved successfully',
+                    'preset_id' => $preset_id
                 )
             ));
             

@@ -103,12 +103,30 @@ class Alumni_Database {
             KEY is_default (is_default)
         ) $charset_collate;";
         
+        // Typography Presets table
+        $table_typography_presets = $wpdb->prefix . 'alumni_typography_presets';
+        $sql_typography_presets = "CREATE TABLE IF NOT EXISTS $table_typography_presets (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            name varchar(255) NOT NULL,
+            font_family varchar(255) DEFAULT '',
+            font_size varchar(50) DEFAULT '',
+            text_color varchar(50) DEFAULT '',
+            description text DEFAULT '',
+            is_default tinyint(1) DEFAULT 0,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY name (name),
+            KEY is_default (is_default)
+        ) $charset_collate;";
+        
         // Execute all table creation queries
         dbDelta($sql_campaigns);
         dbDelta($sql_logs);
         dbDelta($sql_unsubscribes);
         dbDelta($sql_recipient_lists);
         dbDelta($sql_headers_footers);
+        dbDelta($sql_typography_presets);
         
         error_log('Alumni Bulk Email - Database tables created/updated successfully');
     }
@@ -132,7 +150,8 @@ class Alumni_Database {
             'alumni_email_logs', 
             'alumni_email_unsubscribes',
             'alumni_recipient_lists',
-            'alumni_headers_footers'
+            'alumni_headers_footers',
+            'alumni_typography_presets'
         ];
         
         foreach ($required_tables as $table_suffix) {
@@ -158,7 +177,8 @@ class Alumni_Database {
             'alumni_email_logs',
             'alumni_email_unsubscribes', 
             'alumni_recipient_lists',
-            'alumni_headers_footers'
+            'alumni_headers_footers',
+            'alumni_typography_presets'
         ];
         
         foreach ($tables as $table_suffix) {
