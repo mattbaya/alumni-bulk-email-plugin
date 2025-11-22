@@ -260,8 +260,21 @@ class AlumniBulkEmail {
                         <tr>
                             <th><label for="template-content">Content</label></th>
                             <td>
-                                <textarea id="template-content" name="content" rows="10" class="large-text" required></textarea>
-                                <p class="description">You can use HTML formatting. Common tags: &lt;h1&gt;, &lt;p&gt;, &lt;strong&gt;, &lt;br&gt;, &lt;a&gt;</p>
+                                <?php 
+                                wp_editor('', 'template-content', array(
+                                    'textarea_name' => 'content',
+                                    'media_buttons' => true,
+                                    'textarea_rows' => 10,
+                                    'teeny' => false,
+                                    'dfw' => false,
+                                    'tinymce' => array(
+                                        'resize' => true,
+                                        'wp_autoresize_on' => true,
+                                    ),
+                                    'quicktags' => true
+                                ));
+                                ?>
+                                <p class="description">Use the rich text editor to create professional email templates with formatting, links, and images.</p>
                             </td>
                         </tr>
                         <tr>
@@ -322,6 +335,11 @@ class AlumniBulkEmail {
             document.getElementById('form-title').textContent = 'Create New Template';
             document.getElementById('template-form-data').reset();
             document.getElementById('template-id').value = '';
+            
+            // Clear WordPress editor content
+            if (typeof tinyMCE !== 'undefined' && tinyMCE.get('template-content')) {
+                tinyMCE.get('template-content').setContent('');
+            }
         }
 
         function hideCreateTemplateForm() {
@@ -350,7 +368,18 @@ class AlumniBulkEmail {
                     document.getElementById('template-id').value = template.id;
                     document.getElementById('template-name').value = template.name;
                     document.getElementById('template-type').value = template.type;
-                    document.getElementById('template-content').value = template.content;
+                    
+                    // Set content in WordPress editor
+                    if (typeof tinyMCE !== 'undefined' && tinyMCE.get('template-content')) {
+                        tinyMCE.get('template-content').setContent(template.content);
+                    } else {
+                        // Fallback to textarea if TinyMCE not available
+                        const textarea = document.getElementById('template-content');
+                        if (textarea) {
+                            textarea.value = template.content;
+                        }
+                    }
+                    
                     document.getElementById('template-default').checked = template.is_default == 1;
                     document.getElementById('form-title').textContent = 'Edit Template';
                     document.getElementById('template-form').style.display = 'block';
@@ -437,6 +466,11 @@ class AlumniBulkEmail {
         // Handle form submission
         document.getElementById('template-form-data').addEventListener('submit', function(e) {
             e.preventDefault();
+
+            // Sync TinyMCE content to textarea before submission
+            if (typeof tinyMCE !== 'undefined' && tinyMCE.get('template-content')) {
+                tinyMCE.get('template-content').save();
+            }
 
             const formData = new FormData(this);
             formData.append('action', 'save_header_footer');
