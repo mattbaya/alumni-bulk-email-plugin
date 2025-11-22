@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.3.0
+ * Version: 0.3.1
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.3.0');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.3.1');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -260,14 +260,22 @@ class AlumniBulkEmail {
                             </div>
                         </div>
                         
-                        <div style="margin: 20px 0; padding: 15px; background: #f0f8ff; border-left: 4px solid #0073aa;">
+                        <div id="test_email_section" style="margin: 20px 0; padding: 15px; background: #f0f8ff; border-left: 4px solid #0073aa;">
                             <h3 style="margin-top: 0;">📨 Test Your Campaign</h3>
-                            <label for="test_email_address">Test Email Address:</label>
-                            <input type="email" id="test_email_address" name="test_email_address" 
-                                   class="regular-text" placeholder="your@email.com" />
-                            <input type="button" id="send_test_campaign" class="button button-secondary" 
-                                   value="📧 Send Test Email" style="margin-left: 10px;" />
-                            <p class="description">Send a test version of this campaign to verify content and formatting before sending to all recipients.</p>
+                            <table class="form-table">
+                                <tr>
+                                    <th scope="row">
+                                        <label for="test_email_address">Test Email Address</label>
+                                    </th>
+                                    <td>
+                                        <input type="email" id="test_email_address" name="test_email_address" 
+                                               class="regular-text" placeholder="your@email.com" autocomplete="off" />
+                                        <input type="button" id="send_test_campaign" class="button button-secondary" 
+                                               value="📧 Send Test Email" style="margin-left: 10px;" />
+                                        <p class="description">Send a test version of this campaign to verify content and formatting before sending to all recipients.</p>
+                                    </td>
+                                </tr>
+                            </table>
                             <div id="test_campaign_result" style="margin-top: 10px;"></div>
                         </div>
                         
@@ -389,12 +397,20 @@ class AlumniBulkEmail {
             
             $('#campaign_name, #subject').on('input', updatePreview);
             
+            // Prevent test email input from affecting other fields
+            $('#test_email_address').on('input change keyup', function(e) {
+                e.stopPropagation();
+                // This input should not trigger any other events
+            });
+            
             // New Campaign - Clear form
             $('#new_campaign').click(function() {
                 $('#campaign_id').val('');
                 $('#campaign_name').val('');
                 $('#subject').val('');
                 $('#csv_file').val('');
+                $('#test_email_address').val('');
+                $('#test_campaign_result').html('');
                 tinyMCE.get('html_content').setContent('');
                 $('#csv_preview').hide();
                 csvData = [];
