@@ -45,6 +45,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_bulk_edit_recipients', array($this, 'handle_bulk_edit_recipients'));
         add_action('wp_ajax_bulk_delete_recipients', array($this, 'handle_bulk_delete_recipients'));
         add_action('wp_ajax_get_list_columns', array($this, 'handle_get_list_columns'));
+        add_action('wp_ajax_merge_csv_to_list', array($this, 'handle_merge_csv_to_list'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -1558,6 +1559,9 @@ class AlumniBulkEmail {
         $campaign_name = sanitize_text_field($_POST['campaign_name']);
         $subject = sanitize_text_field($_POST['subject']);
         $content_method = sanitize_text_field($_POST['content_method']);
+        $recipients_source = sanitize_text_field($_POST['recipients_source']);
+        $saved_recipients_list = intval($_POST['saved_recipients_list']);
+        $email_column = sanitize_text_field($_POST['email_column']);
         
         // Handle content based on method
         if ($content_method === 'upload' && isset($_FILES['html_file'])) {
@@ -1587,16 +1591,54 @@ class AlumniBulkEmail {
             exit;
         }
         
-        // Parse CSV file
-        if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
-            echo json_encode(array('success' => false, 'data' => array('message' => 'CSV file required')));
-            exit;
-        }
+        // Get recipients based on source
+        $recipients = array();
+        $list_id_used = null;
         
-        $recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
-        if (empty($recipients)) {
-            echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients in CSV')));
-            exit;
+        if ($recipients_source === 'saved_list') {
+            // Load from saved list
+            if (!$saved_recipients_list || !$email_column) {
+                echo json_encode(array('success' => false, 'data' => array('message' => 'Saved list and email column are required')));
+                exit;
+            }
+            
+            global $wpdb;
+            $list = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+                $saved_recipients_list
+            ));
+            
+            if (!$list || !$list->recipients_data) {
+                echo json_encode(array('success' => false, 'data' => array('message' => 'Saved list not found')));
+                exit;
+            }
+            
+            $recipients = json_decode($list->recipients_data, true);
+            if (empty($recipients)) {
+                echo json_encode(array('success' => false, 'data' => array('message' => 'No recipients in saved list')));
+                exit;
+            }
+            
+            // Validate email column exists
+            if (!isset($recipients[0][$email_column])) {
+                echo json_encode(array('success' => false, 'data' => array('message' => 'Email column not found in list')));
+                exit;
+            }
+            
+            $list_id_used = $saved_recipients_list;
+            
+        } else {
+            // Parse CSV file
+            if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
+                echo json_encode(array('success' => false, 'data' => array('message' => 'CSV file required')));
+                exit;
+            }
+            
+            $recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+            if (empty($recipients)) {
+                echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients in CSV')));
+                exit;
+            }
         }
         
         // Create or update campaign record
@@ -1681,6 +1723,11 @@ class AlumniBulkEmail {
             array('%d')
         );
         
+        // Auto-tag recipients if using a saved list
+        if ($list_id_used && $sent_count > 0) {
+            $this->add_campaign_tags_to_list($list_id_used, $campaign_name, current_time('Y-m-d'));
+        }
+        
         echo json_encode(array(
             'success' => true,
             'data' => array(
@@ -1756,6 +1803,126 @@ class AlumniBulkEmail {
         }
         
         return $recipients;
+    }
+    
+    private function add_campaign_tags_to_list($list_id, $campaign_name, $date) {
+        global $wpdb;
+        
+        $list = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$list || !$list->recipients_data) {
+            error_log('Alumni Bulk Email - Failed to load list for campaign tagging: ' . $list_id);
+            return false;
+        }
+        
+        $recipients = json_decode($list->recipients_data, true);
+        if (empty($recipients)) {
+            error_log('Alumni Bulk Email - No recipients data for campaign tagging: ' . $list_id);
+            return false;
+        }
+        
+        // Create campaign tag
+        $campaign_tag = $campaign_name . ' (' . $date . ')';
+        
+        // Add tag to all recipients
+        foreach ($recipients as &$recipient) {
+            $current_tags = isset($recipient['tags']) ? $recipient['tags'] : '';
+            
+            if ($current_tags) {
+                // Split existing tags, add new tag, and deduplicate
+                $tag_array = array_map('trim', explode(',', $current_tags));
+                $tag_array[] = $campaign_tag;
+                $unique_tags = array_unique($tag_array);
+                $recipient['tags'] = implode(', ', $unique_tags);
+            } else {
+                $recipient['tags'] = $campaign_tag;
+            }
+        }
+        
+        // Save back to database
+        $result = $wpdb->update(
+            $wpdb->prefix . 'alumni_recipient_lists',
+            array(
+                'recipients_data' => json_encode($recipients),
+                'updated_at' => current_time('mysql')
+            ),
+            array('id' => $list_id),
+            array('%s', '%s'),
+            array('%d')
+        );
+        
+        if ($result === false) {
+            error_log('Alumni Bulk Email - Failed to save campaign tags for list: ' . $list_id . ' - ' . $wpdb->last_error);
+            return false;
+        }
+        
+        error_log('Alumni Bulk Email - Successfully added campaign tag "' . $campaign_tag . '" to list ' . $list_id . ' (' . count($recipients) . ' recipients)');
+        return true;
+    }
+    
+    private function merge_and_deduplicate_recipients($existing_recipients, $new_recipients) {
+        $merged_recipients = $existing_recipients;
+        $new_recipients_added = array();
+        $duplicate_count = 0;
+        $added_count = 0;
+        
+        // Create a lookup array of existing emails for quick duplicate checking
+        $existing_emails = array();
+        foreach ($existing_recipients as $recipient) {
+            // Try multiple email field variations
+            $email = $this->extract_email_from_recipient($recipient);
+            if ($email) {
+                $existing_emails[strtolower($email)] = true;
+            }
+        }
+        
+        // Process new recipients
+        foreach ($new_recipients as $new_recipient) {
+            $email = $this->extract_email_from_recipient($new_recipient);
+            
+            if (!$email) {
+                continue; // Skip recipients without email
+            }
+            
+            $email_key = strtolower($email);
+            
+            if (isset($existing_emails[$email_key])) {
+                // Duplicate found
+                $duplicate_count++;
+            } else {
+                // New recipient - add to merged list
+                $merged_recipients[] = $new_recipient;
+                $new_recipients_added[] = $new_recipient;
+                $existing_emails[$email_key] = true;
+                $added_count++;
+            }
+        }
+        
+        return array(
+            'merged_recipients' => $merged_recipients,
+            'new_recipients' => $new_recipients_added,
+            'added_count' => $added_count,
+            'duplicate_count' => $duplicate_count
+        );
+    }
+    
+    private function extract_email_from_recipient($recipient) {
+        // Try multiple possible email field names
+        $email_fields = array('email', 'email_address', 'emailaddress', 'e_mail', 'e-mail', 'Email', 'Email_Address');
+        
+        foreach ($email_fields as $field) {
+            if (isset($recipient[$field]) && !empty($recipient[$field])) {
+                $email = trim($recipient[$field]);
+                if (is_email($email)) {
+                    return $email;
+                }
+            }
+        }
+        
+        return null;
     }
     
     private function extract_name_field($recipient) {
@@ -2755,6 +2922,100 @@ class AlumniBulkEmail {
         exit;
     }
     
+    public function handle_merge_csv_to_list() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'merge_csv_to_list') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        $preview_only = $_POST['preview_only'] === '1';
+        
+        if (!$list_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid list ID')));
+            exit;
+        }
+        
+        // Check if CSV file was uploaded
+        if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'CSV file required')));
+            exit;
+        }
+        
+        global $wpdb;
+        $existing_list = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$existing_list) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Target list not found')));
+            exit;
+        }
+        
+        // Parse the new CSV
+        $new_recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+        if (empty($new_recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients found in CSV')));
+            exit;
+        }
+        
+        // Parse existing recipients
+        $existing_recipients = json_decode($existing_list->recipients_data, true);
+        if (!$existing_recipients) {
+            $existing_recipients = array();
+        }
+        
+        // Deduplicate and merge
+        $merge_result = $this->merge_and_deduplicate_recipients($existing_recipients, $new_recipients);
+        
+        if ($preview_only) {
+            // Return preview data
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'preview' => true,
+                    'new_count' => $merge_result['added_count'],
+                    'duplicate_count' => $merge_result['duplicate_count'],
+                    'preview_data' => array_slice($merge_result['new_recipients'], 0, 10)
+                )
+            ));
+            exit;
+        }
+        
+        // Save the merged list
+        $total_recipients = count($merge_result['merged_recipients']);
+        $result = $wpdb->update(
+            $wpdb->prefix . 'alumni_recipient_lists',
+            array(
+                'recipients_data' => json_encode($merge_result['merged_recipients']),
+                'total_count' => $total_recipients,
+                'updated_at' => current_time('mysql')
+            ),
+            array('id' => $list_id),
+            array('%s', '%d', '%s'),
+            array('%d')
+        );
+        
+        if ($result === false) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to save merged list: ' . $wpdb->last_error)));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'message' => 'Lists merged successfully',
+                'added_count' => $merge_result['added_count'],
+                'duplicate_count' => $merge_result['duplicate_count'],
+                'total_count' => $total_recipients
+            )
+        ));
+        exit;
+    }
+    
     public function handle_recreate_tables() {
         header('Content-Type: application/json');
         
@@ -3168,6 +3429,7 @@ class AlumniBulkEmail {
                                 </td>
                                 <td>
                                     <button class="button view-list" data-list-id="<?php echo $list->id; ?>">View</button>
+                                    <button class="button add-to-list" data-list-id="<?php echo $list->id; ?>" data-list-name="<?php echo esc_attr($list->list_name); ?>">Add to List</button>
                                     <button class="button edit-list-name" data-list-id="<?php echo $list->id; ?>" data-current-name="<?php echo esc_attr($list->list_name); ?>">Rename</button>
                                     <button class="button button-link-delete delete-list" data-list-id="<?php echo $list->id; ?>">Delete</button>
                                 </td>
@@ -3277,6 +3539,13 @@ class AlumniBulkEmail {
             $('.view-list').click(function() {
                 var listId = $(this).data('list-id');
                 showListView(listId);
+            });
+            
+            // Add to existing list
+            $('.add-to-list').click(function() {
+                var listId = $(this).data('list-id');
+                var listName = $(this).data('list-name');
+                showAddToListModal(listId, listName);
             });
             
             // Rename list
@@ -4157,6 +4426,133 @@ class AlumniBulkEmail {
                         $('#bulk-delete').prop('disabled', false).text('Delete Selected');
                     }
                 });
+            }
+            
+            // Show add to list modal
+            function showAddToListModal(listId, listName) {
+                var modalHtml = '<div id="add-to-list-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000;">' +
+                    '<div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 25px; border-radius: 8px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">' +
+                    '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #ddd; padding-bottom: 15px;">' +
+                    '<h3 style="margin: 0;">📂 Add Recipients to "' + listName + '"</h3>' +
+                    '<button type="button" id="close-add-modal" class="button">Cancel</button>' +
+                    '</div>' +
+                    '<form id="add-to-list-form" enctype="multipart/form-data">' +
+                    '<input type="hidden" id="target-list-id" value="' + listId + '" />' +
+                    '<div style="margin-bottom: 15px;">' +
+                    '<label for="merge-csv-file" style="display: block; font-weight: bold; margin-bottom: 5px;">Upload CSV File:</label>' +
+                    '<input type="file" id="merge-csv-file" name="csv_file" accept=".csv" required style="width: 100%;" />' +
+                    '<p class="description" style="margin-top: 5px;">CSV will be merged with existing list. Duplicates will be removed based on email addresses.</p>' +
+                    '</div>' +
+                    '<div style="margin-bottom: 15px;">' +
+                    '<label>' +
+                    '<input type="checkbox" id="preview-before-merge" checked /> Preview data before merging' +
+                    '</label>' +
+                    '</div>' +
+                    '<div style="margin-top: 20px; text-align: right; border-top: 1px solid #ddd; padding-top: 15px;">' +
+                    '<button type="button" id="process-merge" class="button button-primary">Upload & Merge</button> ' +
+                    '<button type="button" id="cancel-merge" class="button">Cancel</button>' +
+                    '</div>' +
+                    '</form>' +
+                    '<div id="merge-preview" style="display: none; margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;"></div>' +
+                    '</div></div>';
+                
+                $('body').append(modalHtml);
+                
+                // Event handlers
+                $('#close-add-modal, #cancel-merge').click(function() {
+                    $('#add-to-list-modal').remove();
+                });
+                
+                $('#process-merge').click(function() {
+                    processCsvMerge();
+                });
+            }
+            
+            // Process CSV merge
+            function processCsvMerge() {
+                var fileInput = $('#merge-csv-file')[0];
+                var listId = $('#target-list-id').val();
+                var previewMode = $('#preview-before-merge').is(':checked');
+                
+                if (!fileInput.files[0]) {
+                    alert('Please select a CSV file');
+                    return;
+                }
+                
+                var formData = new FormData();
+                formData.append('action', 'merge_csv_to_list');
+                formData.append('nonce', '<?php echo wp_create_nonce('merge_csv_to_list'); ?>');
+                formData.append('list_id', listId);
+                formData.append('csv_file', fileInput.files[0]);
+                formData.append('preview_only', previewMode ? '1' : '0');
+                
+                var button = $('#process-merge');
+                button.prop('disabled', true).text(previewMode ? 'Processing...' : 'Merging...');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(response) {
+                        if (response.success) {
+                            if (previewMode && response.data.preview) {
+                                showMergePreview(response.data);
+                                button.prop('disabled', false).text('Confirm Merge');
+                                $('#preview-before-merge').prop('checked', false);
+                            } else {
+                                $('#add-to-list-modal').remove();
+                                alert('Success! Added ' + response.data.added_count + ' new recipients to the list. ' + 
+                                      response.data.duplicate_count + ' duplicates were skipped.');
+                                location.reload(); // Refresh to show updated counts
+                            }
+                        } else {
+                            alert('Error: ' + response.data.message);
+                            button.prop('disabled', false).text('Upload & Merge');
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while processing the file');
+                        button.prop('disabled', false).text('Upload & Merge');
+                    }
+                });
+            }
+            
+            // Show merge preview
+            function showMergePreview(data) {
+                var previewDiv = $('#merge-preview');
+                var html = '<h4>Merge Preview:</h4>' +
+                    '<p><strong>' + data.new_count + ' new recipients</strong> will be added to the list.</p>' +
+                    '<p><strong>' + data.duplicate_count + ' duplicates</strong> found and will be skipped.</p>';
+                
+                if (data.preview_data && data.preview_data.length > 0) {
+                    html += '<table class="wp-list-table widefat fixed striped" style="margin-top: 10px;">' +
+                        '<thead><tr>';
+                    
+                    // Add headers
+                    var headers = Object.keys(data.preview_data[0]);
+                    headers.forEach(function(header) {
+                        html += '<th>' + header.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) + '</th>';
+                    });
+                    html += '</tr></thead><tbody>';
+                    
+                    // Add sample rows
+                    data.preview_data.slice(0, 5).forEach(function(row) {
+                        html += '<tr>';
+                        headers.forEach(function(header) {
+                            html += '<td>' + (row[header] || '') + '</td>';
+                        });
+                        html += '</tr>';
+                    });
+                    
+                    if (data.preview_data.length > 5) {
+                        html += '<tr><td colspan="' + headers.length + '"><em>... and ' + (data.preview_data.length - 5) + ' more</em></td></tr>';
+                    }
+                    html += '</tbody></table>';
+                }
+                
+                previewDiv.html(html).show();
             }
         });
         </script>
