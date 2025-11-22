@@ -41,6 +41,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_create_recipient_list', array($this, 'handle_create_recipient_list'));
         add_action('wp_ajax_combine_recipient_lists', array($this, 'handle_combine_recipient_lists'));
         add_action('wp_ajax_view_recipient_list', array($this, 'handle_view_recipient_list'));
+        add_action('wp_ajax_edit_recipient_row', array($this, 'handle_edit_recipient_row'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -2455,6 +2456,94 @@ class AlumniBulkEmail {
         exit;
     }
     
+    public function handle_edit_recipient_row() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'edit_recipient_row') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        $row_index = intval($_POST['row_index']);
+        $updated_data = $_POST['updated_data']; // Array of field => value pairs
+        
+        if (!$list_id || $row_index < 0) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid list ID or row index')));
+            exit;
+        }
+        
+        global $wpdb;
+        $list = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$list) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'List not found')));
+            exit;
+        }
+        
+        $recipients = json_decode($list->recipients_data, true);
+        if (!$recipients || !isset($recipients[$row_index])) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Recipient not found')));
+            exit;
+        }
+        
+        // Sanitize and validate the updated data
+        $sanitized_data = array();
+        foreach ($updated_data as $field => $value) {
+            $sanitized_field = sanitize_text_field($field);
+            $sanitized_value = sanitize_text_field($value);
+            
+            // Special validation for email field
+            if (strtolower($sanitized_field) === 'email') {
+                if (!is_email($sanitized_value)) {
+                    echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid email address')));
+                    exit;
+                }
+            }
+            
+            $sanitized_data[$sanitized_field] = $sanitized_value;
+        }
+        
+        // Update the recipient data
+        foreach ($sanitized_data as $field => $value) {
+            $recipients[$row_index][$field] = $value;
+        }
+        
+        // Regenerate standard fields if they were affected
+        $recipients[$row_index]['name'] = $this->extract_name_field($recipients[$row_index]);
+        $recipients[$row_index]['first_name'] = $this->extract_first_name($recipients[$row_index]);
+        $recipients[$row_index]['last_name'] = $this->extract_last_name($recipients[$row_index]);
+        
+        // Save back to database
+        $result = $wpdb->update(
+            $wpdb->prefix . 'alumni_recipient_lists',
+            array(
+                'recipients_data' => json_encode($recipients),
+                'updated_at' => current_time('mysql')
+            ),
+            array('id' => $list_id),
+            array('%s', '%s'),
+            array('%d')
+        );
+        
+        if ($result === false) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to update recipient: ' . $wpdb->last_error)));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'message' => 'Recipient updated successfully',
+                'updated_recipient' => $recipients[$row_index]
+            )
+        ));
+        exit;
+    }
+    
     public function handle_recreate_tables() {
         header('Content-Type: application/json');
         
@@ -3350,15 +3439,19 @@ class AlumniBulkEmail {
                                 displayName + ' <span class="dynamic-sort-indicator" style="position: absolute; right: 5px;">↕</span></th>';
                 });
                 
+                // Add actions column
+                modalHtml += '<th style="width: 80px;">Actions</th>';
+                
                 modalHtml += '</tr></thead><tbody id="dynamic-recipients-body">';
                 
                 // Add data rows
                 recipients.forEach(function(recipient, index) {
-                    modalHtml += '<tr class="dynamic-recipient-row">';
+                    modalHtml += '<tr class="dynamic-recipient-row" data-row-index="' + index + '">';
                     columns.forEach(function(column) {
                         var value = recipient[column] || '';
-                        modalHtml += '<td>' + $('<div>').text(value).html() + '</td>'; // Escape HTML
+                        modalHtml += '<td class="editable-cell" data-column="' + column + '">' + $('<div>').text(value).html() + '</td>'; // Escape HTML
                     });
+                    modalHtml += '<td><button type="button" class="button button-small edit-row-btn" data-row-index="' + index + '">Edit</button></td>';
                     modalHtml += '</tr>';
                 });
                 
@@ -3396,6 +3489,12 @@ class AlumniBulkEmail {
                 $('.dynamic-sortable').click(function() {
                     var column = $(this).data('column');
                     sortDynamicList(column);
+                });
+                
+                // Edit row functionality
+                $('.edit-row-btn').click(function() {
+                    var rowIndex = $(this).data('row-index');
+                    showEditRowModal(rowIndex);
                 });
                 
                 // Initial count
@@ -3500,6 +3599,134 @@ class AlumniBulkEmail {
                 } else {
                     $('#dynamic-filter-count').text('Showing ' + visibleCount + ' of ' + totalCount + ' recipients');
                 }
+            }
+            
+            // Show edit row modal
+            function showEditRowModal(rowIndex) {
+                if (!window.dynamicListData || !window.dynamicListData.recipients[rowIndex]) {
+                    alert('Recipient data not found');
+                    return;
+                }
+                
+                var recipient = window.dynamicListData.recipients[rowIndex];
+                var columns = window.dynamicListData.columns;
+                
+                var modalHtml = '<div id="edit-row-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10001;">' +
+                    '<div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 25px; border-radius: 8px; width: 90%; max-width: 500px; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.4);">' +
+                    '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #ddd; padding-bottom: 15px;">' +
+                    '<h3 style="margin: 0;">✏️ Edit Recipient</h3>' +
+                    '<button type="button" id="close-edit-modal" class="button">Cancel</button>' +
+                    '</div>' +
+                    '<form id="edit-row-form">';
+                
+                // Create form fields for each column
+                columns.forEach(function(column) {
+                    var value = recipient[column] || '';
+                    var displayName = column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                    
+                    modalHtml += '<div style="margin-bottom: 15px;">' +
+                        '<label for="edit-' + column + '" style="display: block; font-weight: bold; margin-bottom: 5px;">' + displayName + ':</label>' +
+                        '<input type="text" id="edit-' + column + '" name="' + column + '" value="' + $('<div>').text(value).html() + '" ' +
+                        'style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;" />' +
+                        '</div>';
+                });
+                
+                modalHtml += '<div style="margin-top: 20px; text-align: right; border-top: 1px solid #ddd; padding-top: 15px;">' +
+                    '<button type="button" id="save-row-changes" class="button button-primary">Save Changes</button> ' +
+                    '<button type="button" id="cancel-row-changes" class="button">Cancel</button>' +
+                    '</div>' +
+                    '</form>' +
+                    '</div></div>';
+                
+                $('body').append(modalHtml);
+                
+                // Store row index for saving
+                $('#edit-row-modal').data('row-index', rowIndex);
+                
+                // Event handlers
+                $('#close-edit-modal, #cancel-row-changes').click(function() {
+                    $('#edit-row-modal').remove();
+                });
+                
+                $('#save-row-changes').click(function() {
+                    saveRowChanges(rowIndex);
+                });
+                
+                // Focus first field
+                $('#edit-row-form input:first').focus();
+            }
+            
+            // Save row changes
+            function saveRowChanges(rowIndex) {
+                var updatedData = {};
+                var isValid = true;
+                
+                // Collect form data
+                $('#edit-row-form input').each(function() {
+                    var field = $(this).attr('name');
+                    var value = $(this).val().trim();
+                    updatedData[field] = value;
+                    
+                    // Basic email validation
+                    if (field.toLowerCase() === 'email' && value) {
+                        var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                        if (!emailRegex.test(value)) {
+                            alert('Please enter a valid email address');
+                            $(this).focus();
+                            isValid = false;
+                            return false;
+                        }
+                    }
+                });
+                
+                if (!isValid) return;
+                
+                // Disable save button
+                var saveButton = $('#save-row-changes');
+                saveButton.prop('disabled', true).text('Saving...');
+                
+                // Send AJAX request
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'edit_recipient_row',
+                        nonce: '<?php echo wp_create_nonce('edit_recipient_row'); ?>',
+                        list_id: window.dynamicListData.listData.id,
+                        row_index: rowIndex,
+                        updated_data: updatedData
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            // Update the local data
+                            window.dynamicListData.recipients[rowIndex] = response.data.updated_recipient;
+                            
+                            // Update the table row
+                            var row = $('tr[data-row-index="' + rowIndex + '"]');
+                            window.dynamicListData.columns.forEach(function(column, colIndex) {
+                                var newValue = response.data.updated_recipient[column] || '';
+                                row.find('.editable-cell').eq(colIndex).text(newValue);
+                            });
+                            
+                            $('#edit-row-modal').remove();
+                            
+                            // Show success message briefly
+                            var successMsg = $('<div style="position: fixed; top: 50px; right: 20px; background: #46b450; color: white; padding: 10px 15px; border-radius: 4px; z-index: 10002;">✅ Recipient updated successfully</div>');
+                            $('body').append(successMsg);
+                            setTimeout(function() {
+                                successMsg.fadeOut(500, function() { $(this).remove(); });
+                            }, 2000);
+                            
+                        } else {
+                            alert('Error saving changes: ' + response.data.message);
+                            saveButton.prop('disabled', false).text('Save Changes');
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while saving changes');
+                        saveButton.prop('disabled', false).text('Save Changes');
+                    }
+                });
             }
         });
         </script>
