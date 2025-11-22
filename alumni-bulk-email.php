@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.3.3
+ * Version: 0.3.4
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.3.3');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.3.4');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -35,6 +35,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_load_campaign', array($this, 'handle_load_campaign'));
         add_action('wp_ajax_view_campaign', array($this, 'handle_view_campaign'));
         add_action('wp_ajax_delete_campaign', array($this, 'handle_delete_campaign'));
+        add_action('wp_ajax_copy_campaign', array($this, 'handle_copy_campaign'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -65,6 +66,7 @@ class AlumniBulkEmail {
             campaign_name varchar(255) NOT NULL,
             subject varchar(500) NOT NULL,
             html_content longtext NOT NULL,
+            recipients_data longtext,
             recipients_count int DEFAULT 0,
             sent_count int DEFAULT 0,
             bounce_count int DEFAULT 0,
@@ -689,6 +691,7 @@ class AlumniBulkEmail {
                                 '<div style="border: 1px solid #ddd; padding: 15px; margin: 20px 0; background: #f9f9f9;"><strong>Email Content:</strong><div style="margin-top: 10px; border: 1px solid #ccc; padding: 15px; background: white; max-height: 400px; overflow-y: auto;">' + campaign.html_content + '</div></div>' +
                                 '<button type="button" id="close-modal" class="button button-primary" style="margin-right: 10px;">Close</button>' +
                                 '<button type="button" class="button button-secondary load-this-campaign" data-campaign-id="' + campaign.id + '">Load & Reuse This Campaign</button>' +
+                                '<button type="button" class="button button-secondary copy-this-campaign" data-campaign-id="' + campaign.id + '" style="margin-left: 10px;">Copy to New Campaign</button>' +
                                 '</div></div>';
                             
                             $('body').append(modalHtml);
@@ -719,6 +722,13 @@ class AlumniBulkEmail {
                 var campaignId = $(this).data('campaign-id');
                 $('#campaign-modal').remove();
                 loadCampaignForReuse(campaignId);
+            });
+            
+            // Handle copy campaign from modal
+            $(document).on('click', '.copy-this-campaign', function() {
+                var campaignId = $(this).data('campaign-id');
+                $('#campaign-modal').remove();
+                copyCampaignToNew(campaignId);
             });
             
             function loadCampaignForReuse(campaignId) {
@@ -764,6 +774,74 @@ class AlumniBulkEmail {
                         alert('An error occurred while loading the campaign.');
                     }
                 });
+            }
+            
+            function copyCampaignToNew(campaignId) {
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'copy_campaign',
+                        nonce: '<?php echo wp_create_nonce('copy_campaign'); ?>',
+                        campaign_id: campaignId
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            var campaign = response.data.campaign;
+                            var recipients = response.data.recipients;
+                            
+                            // Clear campaign ID to create new campaign
+                            $('#campaign_id').val('');
+                            $('#campaign_name').val(campaign.campaign_name + ' (Copy)');
+                            $('#subject').val(campaign.subject);
+                            tinyMCE.get('html_content').setContent(campaign.html_content);
+                            updatePreview();
+                            
+                            // Load recipients if available
+                            if (recipients && recipients.length > 0) {
+                                csvData = recipients;
+                                displayRecipientsSummary();
+                                $('#csv_preview').show();
+                            } else {
+                                $('#csv_file').val('');
+                                $('#csv_preview').hide();
+                                csvData = [];
+                            }
+                            
+                            $('#test_email_address').val('');
+                            $('#test_campaign_result').html('');
+                            
+                            $('html, body').animate({
+                                scrollTop: $('#bulk-email-form').offset().top - 100
+                            }, 500);
+                            
+                            // Show success message
+                            alert('Campaign copied successfully with recipients! Ready to customize and send.');
+                        } else {
+                            alert('Error copying campaign: ' + response.data.message);
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while copying the campaign.');
+                    }
+                });
+            }
+            
+            function displayRecipientsSummary() {
+                var html = '<div class="notice notice-success"><p><strong>Recipients loaded from copied campaign:</strong> ' + csvData.length + ' recipients</p></div>';
+                html += '<table class="wp-list-table widefat fixed striped">';
+                html += '<thead><tr><th>Name</th><th>Email</th></tr></thead>';
+                
+                csvData.slice(0, 10).forEach(function(row) {
+                    html += '<tr><td>' + (row.name || '') + '</td><td>' + (row.email || '') + '</td></tr>';
+                });
+                
+                if (csvData.length > 10) {
+                    html += '<tr><td colspan="2"><em>... and ' + (csvData.length - 10) + ' more</em></td></tr>';
+                }
+                html += '</table>';
+                
+                $('#csv_preview').html(html);
             }
             
             // CSV Preview
@@ -1345,7 +1423,7 @@ class AlumniBulkEmail {
             $sending_campaign_id = $campaign_id;
         } else {
             // Create new campaign record
-            $sending_campaign_id = $this->create_campaign_record($campaign_name, $subject, $html_content, count($recipients));
+            $sending_campaign_id = $this->create_campaign_record($campaign_name, $subject, $html_content, count($recipients), $recipients);
             
             if (!$sending_campaign_id) {
                 echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to create campaign record')));
@@ -1481,7 +1559,7 @@ class AlumniBulkEmail {
         return $recipients;
     }
     
-    private function create_campaign_record($campaign_name, $subject, $html_content, $recipients_count) {
+    private function create_campaign_record($campaign_name, $subject, $html_content, $recipients_count, $recipients_data = null) {
         global $wpdb;
         
         $result = $wpdb->insert(
@@ -1490,11 +1568,12 @@ class AlumniBulkEmail {
                 'campaign_name' => $campaign_name,
                 'subject' => $subject,
                 'html_content' => $html_content,
+                'recipients_data' => $recipients_data ? json_encode($recipients_data) : null,
                 'recipients_count' => $recipients_count,
                 'status' => 'sending',
                 'created_at' => current_time('mysql')
             ),
-            array('%s', '%s', '%s', '%d', '%s', '%s')
+            array('%s', '%s', '%s', '%s', '%d', '%s', '%s')
         );
         
         return $result ? $wpdb->insert_id : false;
@@ -1722,6 +1801,55 @@ class AlumniBulkEmail {
         echo json_encode(array(
             'success' => true,
             'data' => array('message' => 'Campaign deleted successfully')
+        ));
+        exit;
+    }
+    
+    public function handle_copy_campaign() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'copy_campaign') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $campaign_id = intval($_POST['campaign_id']);
+        
+        if (!$campaign_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid campaign ID')));
+            exit;
+        }
+        
+        global $wpdb;
+        $campaign = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_email_campaigns WHERE id = %d",
+            $campaign_id
+        ));
+        
+        if (!$campaign) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Campaign not found')));
+            exit;
+        }
+        
+        // Decode recipients data if available
+        $recipients = array();
+        if ($campaign->recipients_data) {
+            $recipients = json_decode($campaign->recipients_data, true);
+            if (!$recipients) {
+                $recipients = array();
+            }
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'campaign' => array(
+                    'campaign_name' => $campaign->campaign_name,
+                    'subject' => $campaign->subject,
+                    'html_content' => $campaign->html_content
+                ),
+                'recipients' => $recipients
+            )
         ));
         exit;
     }
