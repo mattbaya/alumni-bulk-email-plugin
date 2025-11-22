@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.1.8
+ * Version: 0.1.9
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.1.8');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.1.9');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -101,7 +101,7 @@ class AlumniBulkEmail {
         add_menu_page(
             'Alumni Bulk Email',
             'Bulk Email',
-            'manage_options',
+            'edit_posts',
             'alumni-bulk-email',
             array($this, 'admin_page'),
             'dashicons-email-alt',
@@ -880,7 +880,7 @@ class AlumniBulkEmail {
     public function handle_csv_upload() {
         header('Content-Type: application/json');
         
-        if (!wp_verify_nonce($_POST['nonce'], 'upload_csv') || !current_user_can('manage_options')) {
+        if (!wp_verify_nonce($_POST['nonce'], 'upload_csv') || !current_user_can('edit_posts')) {
             echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
             exit;
         }
@@ -911,7 +911,7 @@ class AlumniBulkEmail {
     public function handle_bulk_email() {
         header('Content-Type: application/json');
         
-        if (!wp_verify_nonce($_POST['nonce'], 'send_bulk_email') || !current_user_can('manage_options')) {
+        if (!wp_verify_nonce($_POST['nonce'], 'send_bulk_email') || !current_user_can('edit_posts')) {
             echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
             exit;
         }
@@ -1153,7 +1153,7 @@ class AlumniBulkEmail {
     public function handle_save_campaign() {
         header('Content-Type: application/json');
         
-        if (!wp_verify_nonce($_POST['nonce'], 'save_campaign') || !current_user_can('manage_options')) {
+        if (!wp_verify_nonce($_POST['nonce'], 'save_campaign') || !current_user_can('edit_posts')) {
             echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
             exit;
         }
@@ -1238,7 +1238,7 @@ class AlumniBulkEmail {
     public function handle_load_campaign() {
         header('Content-Type: application/json');
         
-        if (!wp_verify_nonce($_POST['nonce'], 'load_campaign') || !current_user_can('manage_options')) {
+        if (!wp_verify_nonce($_POST['nonce'], 'load_campaign') || !current_user_can('edit_posts')) {
             echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
             exit;
         }
@@ -1273,7 +1273,7 @@ class AlumniBulkEmail {
     public function handle_delete_campaign() {
         header('Content-Type: application/json');
         
-        if (!wp_verify_nonce($_POST['nonce'], 'delete_campaign') || !current_user_can('manage_options')) {
+        if (!wp_verify_nonce($_POST['nonce'], 'delete_campaign') || !current_user_can('edit_posts')) {
             echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
             exit;
         }
