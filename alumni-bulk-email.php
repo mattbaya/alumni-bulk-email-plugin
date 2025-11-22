@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.2.0
+ * Version: 0.3.0
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.2.0');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.3.0');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -35,6 +35,11 @@ class AlumniBulkEmail {
         add_action('wp_ajax_load_campaign', array($this, 'handle_load_campaign'));
         add_action('wp_ajax_delete_campaign', array($this, 'handle_delete_campaign'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
+        
+        // Unsubscribe functionality (public and admin access)
+        add_action('wp_ajax_handle_unsubscribe', array($this, 'handle_unsubscribe'));
+        add_action('wp_ajax_nopriv_handle_unsubscribe', array($this, 'handle_unsubscribe'));
+        add_action('init', array($this, 'handle_unsubscribe_page'));
         
         // Create tables on activation
         register_activation_hook(__FILE__, array($this, 'create_tables'));
@@ -88,8 +93,23 @@ class AlumniBulkEmail {
         ) $charset_collate;";
         
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        // Unsubscribe table
+        $table_unsubscribes = $wpdb->prefix . 'alumni_email_unsubscribes';
+        $sql_unsubscribes = "CREATE TABLE IF NOT EXISTS $table_unsubscribes (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            email varchar(255) NOT NULL,
+            unsubscribe_token varchar(255) NOT NULL,
+            unsubscribed_at datetime DEFAULT CURRENT_TIMESTAMP,
+            ip_address varchar(45),
+            user_agent text,
+            PRIMARY KEY (id),
+            UNIQUE KEY email (email),
+            UNIQUE KEY unsubscribe_token (unsubscribe_token)
+        ) $charset_collate;";
+        
         dbDelta($sql_campaigns);
         dbDelta($sql_logs);
+        dbDelta($sql_unsubscribes);
         
         // Set default options
         add_option('alumni_mailgun_api_key', '');
@@ -989,6 +1009,9 @@ class AlumniBulkEmail {
             🧪 THIS IS A TEST EMAIL for campaign: "' . esc_html($campaign_name) . '"
         </div>' . $personalized_html;
         
+        // Add unsubscribe links to test email
+        $test_html = $this->add_unsubscribe_links($test_html, $test_email);
+        
         // Send via Mailgun
         $result = $this->send_mailgun_email($test_email, $test_subject, $test_html);
         
@@ -1112,13 +1135,23 @@ class AlumniBulkEmail {
         $failed_count = 0;
         
         foreach ($recipients as $recipient) {
+            // Skip if email is unsubscribed
+            if ($this->is_email_unsubscribed($recipient['email'])) {
+                // Log as skipped
+                $this->log_email_attempt($sending_campaign_id, $recipient, 'skipped', array('error' => 'Email unsubscribed'));
+                continue;
+            }
+            
             $personalized_subject = $this->personalize_content($subject, $recipient);
             $personalized_html = $this->personalize_content($html_content, $recipient);
+            
+            // Add unsubscribe links to the email
+            $html_with_unsubscribe = $this->add_unsubscribe_links($personalized_html, $recipient['email']);
             
             $result = $this->send_mailgun_email(
                 $recipient['email'],
                 $personalized_subject,
-                $personalized_html
+                $html_with_unsubscribe
             );
             
             // Log email attempt
@@ -1449,6 +1482,154 @@ class AlumniBulkEmail {
             ));
         }
         
+        exit;
+    }
+    
+    private function generate_unsubscribe_token($email) {
+        return hash('sha256', $email . wp_salt() . time());
+    }
+    
+    private function add_unsubscribe_links($html_content, $email) {
+        $unsubscribe_token = $this->generate_unsubscribe_token($email);
+        
+        // Store unsubscribe token if not exists
+        global $wpdb;
+        $wpdb->replace(
+            $wpdb->prefix . 'alumni_email_unsubscribes',
+            array(
+                'email' => $email,
+                'unsubscribe_token' => $unsubscribe_token,
+                'unsubscribed_at' => null // Not unsubscribed yet, just creating token
+            ),
+            array('%s', '%s', '%s')
+        );
+        
+        $unsubscribe_url = add_query_arg(array(
+            'action' => 'alumni_unsubscribe',
+            'token' => $unsubscribe_token
+        ), home_url());
+        
+        // Add unsubscribe link to email content
+        $unsubscribe_footer = '<div style="margin-top: 40px; padding: 20px; background: #f9f9f9; border-top: 1px solid #ddd; text-align: center; font-size: 12px; color: #666;">
+            <p>You received this email because you are subscribed to our alumni mailing list.</p>
+            <p><a href="' . esc_url($unsubscribe_url) . '" style="color: #666; text-decoration: underline;">Unsubscribe from future emails</a></p>
+        </div>';
+        
+        return $html_content . $unsubscribe_footer;
+    }
+    
+    private function is_email_unsubscribed($email) {
+        global $wpdb;
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->prefix}alumni_email_unsubscribes WHERE email = %s AND unsubscribed_at IS NOT NULL",
+            $email
+        ));
+        return $result > 0;
+    }
+    
+    public function handle_unsubscribe_page() {
+        if (isset($_GET['action']) && $_GET['action'] === 'alumni_unsubscribe' && isset($_GET['token'])) {
+            $this->show_unsubscribe_page($_GET['token']);
+            exit;
+        }
+    }
+    
+    private function show_unsubscribe_page($token) {
+        global $wpdb;
+        
+        $email_data = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_email_unsubscribes WHERE unsubscribe_token = %s",
+            $token
+        ));
+        
+        if (!$email_data) {
+            wp_die('Invalid unsubscribe link.', 'Unsubscribe Error', array('response' => 400));
+        }
+        
+        $email = $email_data->email;
+        $already_unsubscribed = !is_null($email_data->unsubscribed_at);
+        
+        if (isset($_POST['confirm_unsubscribe']) && $_POST['confirm_unsubscribe'] === 'yes') {
+            // Process unsubscribe
+            $wpdb->update(
+                $wpdb->prefix . 'alumni_email_unsubscribes',
+                array(
+                    'unsubscribed_at' => current_time('mysql'),
+                    'ip_address' => $_SERVER['REMOTE_ADDR'],
+                    'user_agent' => $_SERVER['HTTP_USER_AGENT']
+                ),
+                array('unsubscribe_token' => $token),
+                array('%s', '%s', '%s'),
+                array('%s')
+            );
+            $already_unsubscribed = true;
+        }
+        
+        // Show unsubscribe page
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Unsubscribe - Alumni Email List</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; line-height: 1.6; }
+                .container { background: #f9f9f9; padding: 30px; border-radius: 8px; text-align: center; }
+                .success { color: #4CAF50; }
+                .button { background: #dc3232; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+                .button:hover { background: #a23232; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <?php if ($already_unsubscribed): ?>
+                    <h1 class="success">✅ Unsubscribed Successfully</h1>
+                    <p>The email address <strong><?php echo esc_html($email); ?></strong> has been removed from our mailing list.</p>
+                    <p>You will no longer receive emails from us.</p>
+                <?php else: ?>
+                    <h1>Unsubscribe from Alumni Emails</h1>
+                    <p>Are you sure you want to unsubscribe <strong><?php echo esc_html($email); ?></strong> from our alumni mailing list?</p>
+                    <form method="post">
+                        <input type="hidden" name="confirm_unsubscribe" value="yes">
+                        <button type="submit" class="button">Yes, Unsubscribe Me</button>
+                    </form>
+                    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+                        If you clicked this link by mistake, simply close this page.
+                    </p>
+                <?php endif; ?>
+            </div>
+        </body>
+        </html>
+        <?php
+    }
+    
+    public function handle_unsubscribe() {
+        // This handles AJAX unsubscribe if needed
+        if (!isset($_POST['token'])) {
+            wp_die('Invalid request', 'Error', array('response' => 400));
+        }
+        
+        $token = sanitize_text_field($_POST['token']);
+        global $wpdb;
+        
+        $result = $wpdb->update(
+            $wpdb->prefix . 'alumni_email_unsubscribes',
+            array(
+                'unsubscribed_at' => current_time('mysql'),
+                'ip_address' => $_SERVER['REMOTE_ADDR'],
+                'user_agent' => $_SERVER['HTTP_USER_AGENT']
+            ),
+            array('unsubscribe_token' => $token),
+            array('%s', '%s', '%s'),
+            array('%s')
+        );
+        
+        if ($result) {
+            echo json_encode(array('success' => true, 'message' => 'Successfully unsubscribed'));
+        } else {
+            echo json_encode(array('success' => false, 'message' => 'Invalid unsubscribe token'));
+        }
         exit;
     }
     
