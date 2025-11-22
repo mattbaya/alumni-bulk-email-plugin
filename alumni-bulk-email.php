@@ -46,6 +46,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_bulk_delete_recipients', array($this, 'handle_bulk_delete_recipients'));
         add_action('wp_ajax_get_list_columns', array($this, 'handle_get_list_columns'));
         add_action('wp_ajax_merge_csv_to_list', array($this, 'handle_merge_csv_to_list'));
+        add_action('wp_ajax_export_recipient_list', array($this, 'handle_export_recipient_list'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -3016,6 +3017,116 @@ class AlumniBulkEmail {
         exit;
     }
     
+    public function handle_export_recipient_list() {
+        if (!wp_verify_nonce($_POST['nonce'], 'export_recipient_list') || !current_user_can('edit_posts')) {
+            wp_die('Unauthorized', 'Error', array('response' => 403));
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        $exclude_bounced = $_POST['exclude_bounced'] === '1';
+        $exclude_unsubscribed = $_POST['exclude_unsubscribed'] === '1';
+        
+        if (!$list_id) {
+            wp_die('Invalid list ID', 'Error', array('response' => 400));
+        }
+        
+        global $wpdb;
+        $list = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$list || !$list->recipients_data) {
+            wp_die('List not found', 'Error', array('response' => 404));
+        }
+        
+        $recipients = json_decode($list->recipients_data, true);
+        if (empty($recipients)) {
+            wp_die('No recipients found in list', 'Error', array('response' => 404));
+        }
+        
+        // Filter recipients based on bounced/unsubscribed status
+        $filtered_recipients = $this->filter_recipients_for_export($recipients, $exclude_bounced, $exclude_unsubscribed);
+        
+        if (empty($filtered_recipients)) {
+            wp_die('No recipients remain after applying filters', 'Error', array('response' => 404));
+        }
+        
+        // Generate CSV content
+        $csv_content = $this->generate_csv_content($filtered_recipients);
+        
+        // Prepare filename
+        $safe_list_name = sanitize_file_name($list->list_name);
+        $timestamp = current_time('Y-m-d_H-i-s');
+        $filename = $safe_list_name . '_export_' . $timestamp . '.csv';
+        
+        // Set headers for download
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Cache-Control: no-cache, no-store, must-revalidate');
+        header('Pragma: no-cache');
+        header('Expires: 0');
+        
+        // Output CSV content
+        echo $csv_content;
+        exit;
+    }
+    
+    private function filter_recipients_for_export($recipients, $exclude_bounced, $exclude_unsubscribed) {
+        $filtered = array();
+        
+        foreach ($recipients as $recipient) {
+            $email = $this->extract_email_from_recipient($recipient);
+            
+            if (!$email) {
+                continue; // Skip recipients without email
+            }
+            
+            // Check if should exclude bounced emails
+            if ($exclude_bounced && $this->is_email_bounced($email)) {
+                continue;
+            }
+            
+            // Check if should exclude unsubscribed emails  
+            if ($exclude_unsubscribed && $this->is_email_unsubscribed($email)) {
+                continue;
+            }
+            
+            $filtered[] = $recipient;
+        }
+        
+        return $filtered;
+    }
+    
+    private function generate_csv_content($recipients) {
+        if (empty($recipients)) {
+            return '';
+        }
+        
+        // Get all column headers from the first recipient
+        $headers = array_keys($recipients[0]);
+        
+        $output = fopen('php://temp', 'w');
+        
+        // Write headers
+        fputcsv($output, $headers);
+        
+        // Write data rows
+        foreach ($recipients as $recipient) {
+            $row = array();
+            foreach ($headers as $header) {
+                $row[] = isset($recipient[$header]) ? $recipient[$header] : '';
+            }
+            fputcsv($output, $row);
+        }
+        
+        rewind($output);
+        $csv_content = stream_get_contents($output);
+        fclose($output);
+        
+        return $csv_content;
+    }
+    
     public function handle_recreate_tables() {
         header('Content-Type: application/json');
         
@@ -3430,6 +3541,7 @@ class AlumniBulkEmail {
                                 <td>
                                     <button class="button view-list" data-list-id="<?php echo $list->id; ?>">View</button>
                                     <button class="button add-to-list" data-list-id="<?php echo $list->id; ?>" data-list-name="<?php echo esc_attr($list->list_name); ?>">Add to List</button>
+                                    <button class="button export-list" data-list-id="<?php echo $list->id; ?>" data-list-name="<?php echo esc_attr($list->list_name); ?>">Export CSV</button>
                                     <button class="button edit-list-name" data-list-id="<?php echo $list->id; ?>" data-current-name="<?php echo esc_attr($list->list_name); ?>">Rename</button>
                                     <button class="button button-link-delete delete-list" data-list-id="<?php echo $list->id; ?>">Delete</button>
                                 </td>
@@ -3546,6 +3658,13 @@ class AlumniBulkEmail {
                 var listId = $(this).data('list-id');
                 var listName = $(this).data('list-name');
                 showAddToListModal(listId, listName);
+            });
+            
+            // Export list as CSV
+            $('.export-list').click(function() {
+                var listId = $(this).data('list-id');
+                var listName = $(this).data('list-name');
+                showExportModal(listId, listName);
             });
             
             // Rename list
@@ -4553,6 +4672,89 @@ class AlumniBulkEmail {
                 }
                 
                 previewDiv.html(html).show();
+            }
+            
+            // Show export modal
+            function showExportModal(listId, listName) {
+                var modalHtml = '<div id="export-list-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000;">' +
+                    '<div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 25px; border-radius: 8px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">' +
+                    '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #ddd; padding-bottom: 15px;">' +
+                    '<h3 style="margin: 0;">📥 Export "' + listName + '" as CSV</h3>' +
+                    '<button type="button" id="close-export-modal" class="button">Cancel</button>' +
+                    '</div>' +
+                    '<form id="export-list-form">' +
+                    '<input type="hidden" id="export-list-id" value="' + listId + '" />' +
+                    
+                    '<div style="margin-bottom: 20px;">' +
+                    '<h4 style="margin: 0 0 10px 0;">Export Options:</h4>' +
+                    '<div style="margin-bottom: 10px;">' +
+                    '<label style="display: block; margin-bottom: 5px;">' +
+                    '<input type="checkbox" id="exclude-bounced" checked /> Exclude bounced email addresses' +
+                    '</label>' +
+                    '<p class="description" style="margin-left: 20px; margin-top: 5px; color: #666; font-size: 12px;">Remove recipients whose emails have bounced multiple times</p>' +
+                    '</div>' +
+                    '<div style="margin-bottom: 10px;">' +
+                    '<label style="display: block; margin-bottom: 5px;">' +
+                    '<input type="checkbox" id="exclude-unsubscribed" checked /> Exclude unsubscribed email addresses' +
+                    '</label>' +
+                    '<p class="description" style="margin-left: 20px; margin-top: 5px; color: #666; font-size: 12px;">Remove recipients who have unsubscribed from emails</p>' +
+                    '</div>' +
+                    '</div>' +
+                    
+                    '<div style="margin-bottom: 15px; padding: 15px; background: #f9f9f9; border-radius: 4px;">' +
+                    '<h4 style="margin: 0 0 10px 0;">File Format:</h4>' +
+                    '<p style="margin: 0; font-size: 12px; color: #666;">CSV file will include all columns from the original import plus any tags that have been added.</p>' +
+                    '</div>' +
+                    
+                    '<div style="margin-top: 20px; text-align: right; border-top: 1px solid #ddd; padding-top: 15px;">' +
+                    '<button type="button" id="start-export" class="button button-primary">Export CSV</button> ' +
+                    '<button type="button" id="cancel-export" class="button">Cancel</button>' +
+                    '</div>' +
+                    '</form>' +
+                    '</div></div>';
+                
+                $('body').append(modalHtml);
+                
+                // Event handlers
+                $('#close-export-modal, #cancel-export').click(function() {
+                    $('#export-list-modal').remove();
+                });
+                
+                $('#start-export').click(function() {
+                    processListExport();
+                });
+            }
+            
+            // Process list export
+            function processListExport() {
+                var listId = $('#export-list-id').val();
+                var excludeBounced = $('#exclude-bounced').is(':checked');
+                var excludeUnsubscribed = $('#exclude-unsubscribed').is(':checked');
+                
+                var button = $('#start-export');
+                button.prop('disabled', true).text('Preparing export...');
+                
+                // Create a form and submit it to trigger download
+                var form = $('<form>', {
+                    'method': 'POST',
+                    'action': ajaxurl,
+                    'target': '_blank'
+                }).append(
+                    $('<input>', {'type': 'hidden', 'name': 'action', 'value': 'export_recipient_list'}),
+                    $('<input>', {'type': 'hidden', 'name': 'nonce', 'value': '<?php echo wp_create_nonce('export_recipient_list'); ?>'}),
+                    $('<input>', {'type': 'hidden', 'name': 'list_id', 'value': listId}),
+                    $('<input>', {'type': 'hidden', 'name': 'exclude_bounced', 'value': excludeBounced ? '1' : '0'}),
+                    $('<input>', {'type': 'hidden', 'name': 'exclude_unsubscribed', 'value': excludeUnsubscribed ? '1' : '0'})
+                );
+                
+                $('body').append(form);
+                form.submit();
+                form.remove();
+                
+                // Close modal after brief delay
+                setTimeout(function() {
+                    $('#export-list-modal').remove();
+                }, 1000);
             }
         });
         </script>
