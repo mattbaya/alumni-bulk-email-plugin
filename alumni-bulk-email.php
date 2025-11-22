@@ -5,7 +5,7 @@
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
  * Version: 1.1.1
  * Author: Matt Baya
- * Author URI: https://mattbaya.net
+ * Author URI: https://svaha.com
  * License: GPL v2 or later
  * Text Domain: alumni-bulk-email
  */
