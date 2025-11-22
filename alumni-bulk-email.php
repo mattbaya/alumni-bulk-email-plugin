@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.3.1
+ * Version: 0.3.2
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.3.1');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.4.0');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -33,6 +33,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_upload_csv', array($this, 'handle_csv_upload'));
         add_action('wp_ajax_save_campaign', array($this, 'handle_save_campaign'));
         add_action('wp_ajax_load_campaign', array($this, 'handle_load_campaign'));
+        add_action('wp_ajax_view_campaign', array($this, 'handle_view_campaign'));
         add_action('wp_ajax_delete_campaign', array($this, 'handle_delete_campaign'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
         
@@ -154,19 +155,19 @@ class AlumniBulkEmail {
             return;
         }
         
-        // Get recent campaigns and saved drafts for display
+        // Get campaigns for display - separate draft and completed
         global $wpdb;
-        $recent_campaigns = $wpdb->get_results("
-            SELECT * FROM {$wpdb->prefix}alumni_email_campaigns 
-            WHERE status IN ('completed', 'sending', 'failed')
-            ORDER BY created_at DESC 
-            LIMIT 5
-        ");
-        
         $saved_campaigns = $wpdb->get_results("
             SELECT * FROM {$wpdb->prefix}alumni_email_campaigns 
             WHERE status = 'draft'
             ORDER BY created_at DESC
+        ");
+        
+        $completed_campaigns = $wpdb->get_results("
+            SELECT * FROM {$wpdb->prefix}alumni_email_campaigns 
+            WHERE status IN ('completed', 'sending', 'failed')
+            ORDER BY sent_at DESC 
+            LIMIT 10
         ");
         ?>
         <div class="wrap">
@@ -225,18 +226,44 @@ class AlumniBulkEmail {
                                     <label for="html_content">Email Content</label>
                                 </th>
                                 <td>
-                                    <?php 
-                                    wp_editor('', 'html_content', array(
-                                        'media_buttons' => true,
-                                        'textarea_rows' => 15,
-                                        'teeny' => false,
-                                        'tinymce' => array(
-                                            'plugins' => 'lists,link,image,paste,textcolor',
-                                            'toolbar1' => 'bold,italic,underline,link,unlink,forecolor,alignleft,aligncenter,alignright,bullist,numlist',
-                                            'toolbar2' => 'undo,redo,image,removeformat,code'
-                                        )
-                                    )); 
-                                    ?>
+                                    <div style="margin-bottom: 15px;">
+                                        <label>
+                                            <input type="radio" name="content_method" value="editor" id="content_method_editor" checked />
+                                            Compose using editor
+                                        </label>
+                                        <span style="margin: 0 20px;">|</span>
+                                        <label>
+                                            <input type="radio" name="content_method" value="upload" id="content_method_upload" />
+                                            Upload HTML file
+                                        </label>
+                                    </div>
+                                    
+                                    <div id="content_editor_section">
+                                        <?php 
+                                        wp_editor('', 'html_content', array(
+                                            'media_buttons' => true,
+                                            'textarea_rows' => 15,
+                                            'teeny' => false,
+                                            'tinymce' => array(
+                                                'plugins' => 'lists,link,image,paste,textcolor',
+                                                'toolbar1' => 'bold,italic,underline,link,unlink,forecolor,alignleft,aligncenter,alignright,bullist,numlist',
+                                                'toolbar2' => 'undo,redo,image,removeformat,code'
+                                            )
+                                        )); 
+                                        ?>
+                                    </div>
+                                    
+                                    <div id="content_upload_section" style="display: none;">
+                                        <input type="file" id="html_file" name="html_file" accept=".html,.htm" />
+                                        <button type="button" id="preview_html_file" class="button button-small" style="margin-left: 10px;">Preview HTML File</button>
+                                        <div id="html_file_preview" style="margin-top: 15px; display: none;">
+                                            <h4>HTML Content Preview:</h4>
+                                            <div style="border: 1px solid #ddd; padding: 15px; background: #f9f9f9; max-height: 300px; overflow-y: auto;">
+                                                <div id="html_preview_content"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
                                     <p class="description">Use {name}, {first_name}, {last_name}, {email} for personalization</p>
                                 </td>
                             </tr>
@@ -346,10 +373,10 @@ class AlumniBulkEmail {
             </div>
             <?php endif; ?>
             
-            <!-- Recent Campaigns -->
-            <?php if (!empty($recent_campaigns)): ?>
+            <!-- Completed Campaigns -->
+            <?php if (!empty($completed_campaigns)): ?>
             <div class="postbox">
-                <h2 class="hndle">📋 Recent Campaigns</h2>
+                <h2 class="hndle">📋 Completed Campaigns</h2>
                 <div class="inside">
                     <table class="wp-list-table widefat fixed striped">
                         <thead>
@@ -359,11 +386,12 @@ class AlumniBulkEmail {
                                 <th>Recipients</th>
                                 <th>Sent</th>
                                 <th>Status</th>
-                                <th>Date</th>
+                                <th>Date Sent</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($recent_campaigns as $campaign): ?>
+                            <?php foreach ($completed_campaigns as $campaign): ?>
                             <tr>
                                 <td><strong><?php echo esc_html($campaign->campaign_name); ?></strong></td>
                                 <td><?php echo esc_html($campaign->subject); ?></td>
@@ -374,7 +402,24 @@ class AlumniBulkEmail {
                                         <?php echo esc_html(ucfirst($campaign->status)); ?>
                                     </span>
                                 </td>
-                                <td><?php echo esc_html(date('M j, Y H:i', strtotime($campaign->created_at))); ?></td>
+                                <td>
+                                    <?php 
+                                    echo $campaign->sent_at ? 
+                                        esc_html(date('M j, Y H:i', strtotime($campaign->sent_at))) : 
+                                        esc_html(date('M j, Y H:i', strtotime($campaign->created_at))); 
+                                    ?>
+                                </td>
+                                <td>
+                                    <button type="button" class="button button-small view-campaign" 
+                                            data-campaign-id="<?php echo $campaign->id; ?>">
+                                        👁️ View
+                                    </button>
+                                    <button type="button" class="button button-small load-completed-campaign" 
+                                            data-campaign-id="<?php echo $campaign->id; ?>" 
+                                            style="margin-left: 5px;">
+                                        📝 Load & Reuse
+                                    </button>
+                                </td>
                             </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -396,6 +441,40 @@ class AlumniBulkEmail {
             }
             
             $('#campaign_name, #subject').on('input', updatePreview);
+            
+            // Content method switching
+            $('input[name="content_method"]').change(function() {
+                if ($(this).val() === 'editor') {
+                    $('#content_editor_section').show();
+                    $('#content_upload_section').hide();
+                    $('#html_file_preview').hide();
+                } else {
+                    $('#content_editor_section').hide();
+                    $('#content_upload_section').show();
+                }
+            });
+            
+            // Preview HTML file
+            $('#preview_html_file').click(function() {
+                var fileInput = $('#html_file')[0];
+                if (!fileInput.files[0]) {
+                    alert('Please select an HTML file first.');
+                    return;
+                }
+                
+                var reader = new FileReader();
+                reader.onload = function(e) {
+                    var htmlContent = e.target.result;
+                    $('#html_preview_content').html(htmlContent);
+                    $('#html_file_preview').show();
+                    
+                    // Also update the hidden editor content
+                    if (tinyMCE.get('html_content')) {
+                        tinyMCE.get('html_content').setContent(htmlContent);
+                    }
+                };
+                reader.readAsText(fileInput.files[0]);
+            });
             
             // Prevent test email input from affecting other fields
             $('#test_email_address').on('input change keyup', function(e) {
@@ -584,6 +663,107 @@ class AlumniBulkEmail {
                 });
             });
             
+            // View Completed Campaign
+            $('.view-campaign').click(function() {
+                var campaignId = $(this).data('campaign-id');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'view_campaign',
+                        nonce: '<?php echo wp_create_nonce('view_campaign'); ?>',
+                        campaign_id: campaignId
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            var campaign = response.data.campaign;
+                            var modalHtml = '<div id="campaign-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000;">' +
+                                '<div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 8px; max-width: 800px; max-height: 90vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">' +
+                                '<h2>📧 Campaign: ' + campaign.campaign_name + '</h2>' +
+                                '<p><strong>Subject:</strong> ' + campaign.subject + '</p>' +
+                                '<p><strong>Recipients:</strong> ' + campaign.recipients_count + ' | <strong>Sent:</strong> ' + campaign.sent_count + ' | <strong>Status:</strong> ' + campaign.status + '</p>' +
+                                '<p><strong>Date Sent:</strong> ' + (campaign.sent_at || campaign.created_at) + '</p>' +
+                                '<div style="border: 1px solid #ddd; padding: 15px; margin: 20px 0; background: #f9f9f9;"><strong>Email Content:</strong><div style="margin-top: 10px; border: 1px solid #ccc; padding: 15px; background: white; max-height: 400px; overflow-y: auto;">' + campaign.html_content + '</div></div>' +
+                                '<button type="button" id="close-modal" class="button button-primary" style="margin-right: 10px;">Close</button>' +
+                                '<button type="button" class="button button-secondary load-this-campaign" data-campaign-id="' + campaign.id + '">Load & Reuse This Campaign</button>' +
+                                '</div></div>';
+                            
+                            $('body').append(modalHtml);
+                            
+                            $('#close-modal, #campaign-modal').click(function(e) {
+                                if (e.target === this) {
+                                    $('#campaign-modal').remove();
+                                }
+                            });
+                        } else {
+                            alert('Error viewing campaign: ' + response.data.message);
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while viewing the campaign.');
+                    }
+                });
+            });
+            
+            // Load Completed Campaign for Reuse
+            $('.load-completed-campaign').click(function() {
+                var campaignId = $(this).data('campaign-id');
+                loadCampaignForReuse(campaignId);
+            });
+            
+            // Handle load campaign from modal
+            $(document).on('click', '.load-this-campaign', function() {
+                var campaignId = $(this).data('campaign-id');
+                $('#campaign-modal').remove();
+                loadCampaignForReuse(campaignId);
+            });
+            
+            function loadCampaignForReuse(campaignId) {
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'load_campaign',
+                        nonce: '<?php echo wp_create_nonce('load_campaign'); ?>',
+                        campaign_id: campaignId
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            var campaign = response.data.campaign;
+                            
+                            // Clear campaign ID to create new draft
+                            $('#campaign_id').val('');
+                            
+                            // Load campaign data with " (Copy)" suffix
+                            $('#campaign_name').val(campaign.campaign_name + ' (Copy)');
+                            $('#subject').val(campaign.subject);
+                            tinyMCE.get('html_content').setContent(campaign.html_content);
+                            updatePreview();
+                            
+                            // Clear CSV and test email fields since this is a reuse
+                            $('#csv_file').val('');
+                            $('#test_email_address').val('');
+                            $('#test_campaign_result').html('');
+                            $('#csv_preview').hide();
+                            csvData = [];
+                            
+                            $('html, body').animate({
+                                scrollTop: $('#bulk-email-form').offset().top - 100
+                            }, 500);
+                            
+                            // Show success message
+                            alert('Campaign loaded successfully! Ready to customize and send to new recipients.');
+                        } else {
+                            alert('Error loading campaign: ' + response.data.message);
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while loading the campaign.');
+                    }
+                });
+            }
+            
             // CSV Preview
             $('#preview_csv').click(function() {
                 var fileInput = $('#csv_file')[0];
@@ -644,9 +824,18 @@ class AlumniBulkEmail {
                     return;
                 }
                 
-                if (!tinyMCE.get('html_content').getContent()) {
-                    alert('Please write your email content.');
-                    return;
+                // Check content based on composition method
+                var contentMethod = $('input[name="content_method"]:checked').val();
+                if (contentMethod === 'editor') {
+                    if (!tinyMCE.get('html_content').getContent()) {
+                        alert('Please write your email content.');
+                        return;
+                    }
+                } else if (contentMethod === 'upload') {
+                    if (!$('#html_file')[0].files.length) {
+                        alert('Please upload an HTML file.');
+                        return;
+                    }
                 }
                 
                 var confirmed = confirm('Send email campaign to ' + csvData.length + ' recipients?\\n\\nThis action cannot be undone.');
@@ -655,7 +844,15 @@ class AlumniBulkEmail {
                 var formData = new FormData($('#bulk-email-form')[0]);
                 formData.append('action', 'send_bulk_email');
                 formData.append('nonce', '<?php echo wp_create_nonce('send_bulk_email'); ?>');
-                formData.append('html_content', tinyMCE.get('html_content').getContent());
+                
+                // Append content based on method
+                var contentMethod = $('input[name="content_method"]:checked').val();
+                if (contentMethod === 'editor') {
+                    formData.append('html_content', tinyMCE.get('html_content').getContent());
+                } else if (contentMethod === 'upload') {
+                    formData.append('html_file', $('#html_file')[0].files[0]);
+                }
+                formData.append('content_method', contentMethod);
                 formData.append('campaign_id', $('#campaign_id').val());
                 
                 $('#send_campaign').prop('disabled', true);
@@ -1087,7 +1284,15 @@ class AlumniBulkEmail {
         $campaign_id = intval($_POST['campaign_id']);
         $campaign_name = sanitize_text_field($_POST['campaign_name']);
         $subject = sanitize_text_field($_POST['subject']);
-        $html_content = wp_kses_post($_POST['html_content']);
+        $content_method = sanitize_text_field($_POST['content_method']);
+        
+        // Handle content based on method
+        if ($content_method === 'upload' && isset($_FILES['html_file'])) {
+            $html_content = file_get_contents($_FILES['html_file']['tmp_name']);
+            $html_content = wp_kses_post($html_content);
+        } else {
+            $html_content = wp_kses_post($_POST['html_content']);
+        }
         
         // If we have a campaign_id, load from saved campaign
         if ($campaign_id > 0) {
@@ -1425,7 +1630,42 @@ class AlumniBulkEmail {
         
         global $wpdb;
         $campaign = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}alumni_email_campaigns WHERE id = %d AND status = 'draft'",
+            "SELECT * FROM {$wpdb->prefix}alumni_email_campaigns WHERE id = %d",
+            $campaign_id
+        ));
+        
+        if (!$campaign) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Campaign not found')));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'campaign' => $campaign
+            )
+        ));
+        exit;
+    }
+    
+    public function handle_view_campaign() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'view_campaign') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $campaign_id = intval($_POST['campaign_id']);
+        
+        if (!$campaign_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid campaign ID')));
+            exit;
+        }
+        
+        global $wpdb;
+        $campaign = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_email_campaigns WHERE id = %d",
             $campaign_id
         ));
         
@@ -1502,23 +1742,37 @@ class AlumniBulkEmail {
     }
     
     private function generate_unsubscribe_token($email) {
-        return hash('sha256', $email . wp_salt() . time());
+        // Generate a consistent token for the same email
+        return hash('sha256', $email . wp_salt() . get_option('alumni_from_email', ''));
     }
     
     private function add_unsubscribe_links($html_content, $email) {
         $unsubscribe_token = $this->generate_unsubscribe_token($email);
         
-        // Store unsubscribe token if not exists
+        // Store unsubscribe token if not exists  
         global $wpdb;
-        $wpdb->replace(
-            $wpdb->prefix . 'alumni_email_unsubscribes',
-            array(
-                'email' => $email,
-                'unsubscribe_token' => $unsubscribe_token,
-                'unsubscribed_at' => null // Not unsubscribed yet, just creating token
-            ),
-            array('%s', '%s', '%s')
-        );
+        
+        // Check if token already exists for this email
+        $existing_token = $wpdb->get_var($wpdb->prepare(
+            "SELECT unsubscribe_token FROM {$wpdb->prefix}alumni_email_unsubscribes WHERE email = %s",
+            $email
+        ));
+        
+        if ($existing_token && !empty($existing_token)) {
+            // Use existing token
+            $unsubscribe_token = $existing_token;
+        } else {
+            // Create new token
+            $wpdb->replace(
+                $wpdb->prefix . 'alumni_email_unsubscribes',
+                array(
+                    'email' => $email,
+                    'unsubscribe_token' => $unsubscribe_token,
+                    'unsubscribed_at' => null
+                ),
+                array('%s', '%s', '%s')
+            );
+        }
         
         $unsubscribe_url = add_query_arg(array(
             'action' => 'alumni_unsubscribe',
@@ -1553,13 +1807,25 @@ class AlumniBulkEmail {
     private function show_unsubscribe_page($token) {
         global $wpdb;
         
+        // Ensure unsubscribe table exists
+        $table_name = $wpdb->prefix . 'alumni_email_unsubscribes';
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_name'") === $table_name;
+        
+        if (!$table_exists) {
+            $this->create_tables();
+        }
+        
         $email_data = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM {$wpdb->prefix}alumni_email_unsubscribes WHERE unsubscribe_token = %s",
             $token
         ));
         
         if (!$email_data) {
-            wp_die('Invalid unsubscribe link.', 'Unsubscribe Error', array('response' => 400));
+            wp_die(
+                'Invalid unsubscribe link. This link may have expired or is malformed. Please contact us directly if you need to unsubscribe.',
+                'Unsubscribe Error',
+                array('response' => 400)
+            );
         }
         
         $email = $email_data->email;
