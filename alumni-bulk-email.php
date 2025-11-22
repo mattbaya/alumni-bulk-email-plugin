@@ -526,6 +526,11 @@ class AlumniBulkEmail {
         $list_manager = new Alumni_List_Manager();
         $saved_lists = $list_manager->get_all_lists();
         
+        // Get available templates for header/footer selection
+        $header_footer_manager = new Alumni_Header_Footer_Manager();
+        $headers = $header_footer_manager->get_all_templates('header');
+        $footers = $header_footer_manager->get_all_templates('footer');
+        
         ?>
         <form id="bulk-email-form" enctype="multipart/form-data">
             <?php wp_nonce_field('send_bulk_email', 'nonce'); ?>
@@ -644,6 +649,61 @@ class AlumniBulkEmail {
             </div>
             
             <div class="postbox">
+                <h2 class="hndle">Email Templates</h2>
+                <div class="inside">
+                    <table class="form-table">
+                        <tr>
+                            <th><label for="header_template">Header Template</label></th>
+                            <td>
+                                <select id="header_template" name="header_template">
+                                    <option value="">None - No header</option>
+                                    <?php foreach ($headers as $header): ?>
+                                        <option value="<?php echo $header->id; ?>" <?php echo $header->is_default ? 'selected' : ''; ?>>
+                                            <?php echo esc_html($header->name); ?>
+                                            <?php if ($header->is_default): ?>
+                                                (Default)
+                                            <?php endif; ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="button" class="button button-small" onclick="previewTemplate('header', document.getElementById('header_template').value)" style="margin-left: 10px;">Preview</button>
+                                <p class="description">Select a header template to add consistent branding to the top of your email</p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="footer_template">Footer Template</label></th>
+                            <td>
+                                <select id="footer_template" name="footer_template">
+                                    <option value="">None - No footer</option>
+                                    <?php foreach ($footers as $footer): ?>
+                                        <option value="<?php echo $footer->id; ?>" <?php echo $footer->is_default ? 'selected' : ''; ?>>
+                                            <?php echo esc_html($footer->name); ?>
+                                            <?php if ($footer->is_default): ?>
+                                                (Default)
+                                            <?php endif; ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="button" class="button button-small" onclick="previewTemplate('footer', document.getElementById('footer_template').value)" style="margin-left: 10px;">Preview</button>
+                                <p class="description">Select a footer template to add consistent information to the bottom of your email</p>
+                            </td>
+                        </tr>
+                    </table>
+                    
+                    <!-- Template preview modal -->
+                    <div id="template-preview-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 100000;">
+                        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border-radius: 5px; max-width: 600px; max-height: 80%; overflow-y: auto;">
+                            <h3 id="preview-title">Template Preview</h3>
+                            <div id="preview-content" style="border: 1px solid #ddd; padding: 15px; background: #f9f9f9;"></div>
+                            <p style="margin-top: 15px;">
+                                <button type="button" class="button" onclick="closeTemplatePreview()">Close</button>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="postbox">
                 <h2 class="hndle">Test & Send</h2>
                 <div class="inside">
                     <h4>Test Email</h4>
@@ -714,7 +774,9 @@ class AlumniBulkEmail {
                     nonce: '<?php echo wp_create_nonce('send_test_email'); ?>',
                     test_email: testEmail,
                     subject: subject,
-                    content: content
+                    content: content,
+                    header_template: $('#header_template').val(),
+                    footer_template: $('#footer_template').val()
                 }).done(function(response) {
                     $('#test_email_status').text(response.data.message)
                         .css('color', response.success ? 'green' : 'red');
@@ -751,6 +813,49 @@ class AlumniBulkEmail {
                     $('#send_campaign').prop('disabled', false).text('Send Campaign Now');
                 });
             });
+        });
+        
+        // Template preview functions
+        function previewTemplate(type, templateId) {
+            if (!templateId) {
+                alert('Please select a template to preview');
+                return;
+            }
+            
+            var data = new FormData();
+            data.append('action', 'get_template');
+            data.append('nonce', '<?php echo wp_create_nonce("get_template"); ?>');
+            data.append('id', templateId);
+
+            fetch(ajaxurl, {
+                method: 'POST',
+                body: data
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    const template = result.data.template;
+                    document.getElementById('preview-title').textContent = template.name + ' (' + template.type + ')';
+                    document.getElementById('preview-content').innerHTML = template.content;
+                    document.getElementById('template-preview-modal').style.display = 'block';
+                } else {
+                    alert('Error loading template: ' + result.data.message);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+        
+        function closeTemplatePreview() {
+            document.getElementById('template-preview-modal').style.display = 'none';
+        }
+        
+        // Close modal when clicking background
+        document.getElementById('template-preview-modal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeTemplatePreview();
+            }
         });
         </script>
         <?php

@@ -94,6 +94,14 @@ class Alumni_Ajax_Handlers {
                 throw new Exception('Missing required fields');
             }
             
+            // Apply header and footer templates if selected
+            $header_id = isset($_POST['header_template']) ? intval($_POST['header_template']) : null;
+            $footer_id = isset($_POST['footer_template']) ? intval($_POST['footer_template']) : null;
+            
+            if ($header_id || $footer_id) {
+                $content = $this->header_footer_manager->apply_templates($content, $header_id, $footer_id);
+            }
+            
             $result = $this->campaign_manager->send_test_email($test_email, $subject, $content);
             
             echo json_encode(array(
@@ -213,6 +221,14 @@ class Alumni_Ajax_Handlers {
             
             if (empty($recipients)) {
                 throw new Exception('No recipients found');
+            }
+            
+            // Apply header and footer templates if selected
+            $header_id = isset($_POST['header_template']) ? intval($_POST['header_template']) : null;
+            $footer_id = isset($_POST['footer_template']) ? intval($_POST['footer_template']) : null;
+            
+            if ($header_id || $footer_id) {
+                $content = $this->header_footer_manager->apply_templates($content, $header_id, $footer_id);
             }
             
             // Send campaign
