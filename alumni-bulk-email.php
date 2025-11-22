@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.3.2
+ * Version: 0.3.3
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.4.0');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.3.3');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -35,6 +35,8 @@ class AlumniBulkEmail {
         add_action('wp_ajax_load_campaign', array($this, 'handle_load_campaign'));
         add_action('wp_ajax_view_campaign', array($this, 'handle_view_campaign'));
         add_action('wp_ajax_delete_campaign', array($this, 'handle_delete_campaign'));
+        add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
+        add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
         
         // Unsubscribe functionality (public and admin access)
@@ -1363,6 +1365,13 @@ class AlumniBulkEmail {
                 continue;
             }
             
+            // Skip if email has bounced too many times
+            if ($this->is_email_bounced($recipient['email'])) {
+                // Log as skipped
+                $this->log_email_attempt($sending_campaign_id, $recipient, 'skipped', array('error' => 'Email bounced'));
+                continue;
+            }
+            
             $personalized_subject = $this->personalize_content($subject, $recipient);
             $personalized_html = $this->personalize_content($html_content, $recipient);
             
@@ -1797,6 +1806,22 @@ class AlumniBulkEmail {
         return $result > 0;
     }
     
+    private function is_email_bounced($email) {
+        global $wpdb;
+        // Count recent bounces (last 30 days)
+        $bounce_count = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->prefix}alumni_email_logs 
+             WHERE recipient_email = %s 
+             AND status IN ('failed', 'bounced') 
+             AND bounce_reason IS NOT NULL 
+             AND sent_at > DATE_SUB(NOW(), INTERVAL 30 DAY)",
+            $email
+        ));
+        
+        // Consider email bounced if 3+ bounces in last 30 days
+        return $bounce_count >= 3;
+    }
+    
     public function handle_unsubscribe_page() {
         if (isset($_GET['action']) && $_GET['action'] === 'alumni_unsubscribe' && isset($_GET['token'])) {
             $this->show_unsubscribe_page($_GET['token']);
@@ -1913,6 +1938,73 @@ class AlumniBulkEmail {
             echo json_encode(array('success' => false, 'message' => 'Invalid unsubscribe token'));
         }
         exit;
+    }
+    
+    public function handle_mailgun_webhook() {
+        // Get the raw POST data
+        $json = file_get_contents('php://input');
+        $data = json_decode($json, true);
+        
+        if (!$data) {
+            http_response_code(400);
+            exit('Invalid JSON');
+        }
+        
+        // Verify webhook signature (optional but recommended)
+        // For now, we'll process without verification
+        
+        $event_type = $data['event-data']['event'] ?? '';
+        $recipient = $data['event-data']['recipient'] ?? '';
+        $message_id = $data['event-data']['message']['headers']['message-id'] ?? '';
+        
+        global $wpdb;
+        
+        // Update email log based on event type
+        switch ($event_type) {
+            case 'delivered':
+                $wpdb->update(
+                    $wpdb->prefix . 'alumni_email_logs',
+                    array('status' => 'delivered'),
+                    array('mailgun_message_id' => $message_id),
+                    array('%s'),
+                    array('%s')
+                );
+                break;
+                
+            case 'failed':
+            case 'bounced':
+                $reason = $data['event-data']['delivery-status']['description'] ?? 'Unknown error';
+                $wpdb->update(
+                    $wpdb->prefix . 'alumni_email_logs',
+                    array(
+                        'status' => $event_type,
+                        'bounce_reason' => $reason
+                    ),
+                    array('mailgun_message_id' => $message_id),
+                    array('%s', '%s'),
+                    array('%s')
+                );
+                break;
+                
+            case 'opened':
+                // Update open count
+                $wpdb->query($wpdb->prepare(
+                    "UPDATE {$wpdb->prefix}alumni_email_logs SET open_count = open_count + 1 WHERE mailgun_message_id = %s",
+                    $message_id
+                ));
+                break;
+                
+            case 'clicked':
+                // Update click count
+                $wpdb->query($wpdb->prepare(
+                    "UPDATE {$wpdb->prefix}alumni_email_logs SET click_count = click_count + 1 WHERE mailgun_message_id = %s",
+                    $message_id
+                ));
+                break;
+        }
+        
+        http_response_code(200);
+        exit('OK');
     }
     
     private function send_mailgun_email($to, $subject, $html, $text = '') {
