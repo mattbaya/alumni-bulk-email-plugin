@@ -2218,18 +2218,42 @@ class AlumniBulkEmail {
         
         // Save to database
         global $wpdb;
+        
+        // Verify table exists
+        $table_name = $wpdb->prefix . 'alumni_recipient_lists';
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_name'") == $table_name;
+        if (!$table_exists) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Database table does not exist. Please deactivate and reactivate the plugin.')));
+            exit;
+        }
+        
+        // Check JSON size
+        $json_data = json_encode($recipients);
+        if ($json_data === false) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to encode recipient data as JSON')));
+            exit;
+        }
+        
+        $json_size_mb = strlen($json_data) / (1024 * 1024);
+        if ($json_size_mb > 16) { // MySQL longtext limit is ~16MB
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Recipient data too large (' . number_format($json_size_mb, 2) . 'MB). Please reduce list size.')));
+            exit;
+        }
+        
         $result = $wpdb->insert(
             $wpdb->prefix . 'alumni_recipient_lists',
             array(
                 'list_name' => $list_name,
-                'recipients_data' => json_encode($recipients),
+                'recipients_data' => $json_data,
                 'total_count' => count($recipients)
             ),
             array('%s', '%s', '%d')
         );
         
         if ($result === false) {
-            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to save list')));
+            // Log the error for debugging
+            error_log('Alumni Bulk Email - Failed to create list: ' . $wpdb->last_error);
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to save list: ' . $wpdb->last_error)));
             exit;
         }
         
