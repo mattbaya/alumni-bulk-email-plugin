@@ -42,6 +42,8 @@ class AlumniBulkEmail {
         add_action('wp_ajax_combine_recipient_lists', array($this, 'handle_combine_recipient_lists'));
         add_action('wp_ajax_view_recipient_list', array($this, 'handle_view_recipient_list'));
         add_action('wp_ajax_edit_recipient_row', array($this, 'handle_edit_recipient_row'));
+        add_action('wp_ajax_bulk_edit_recipients', array($this, 'handle_bulk_edit_recipients'));
+        add_action('wp_ajax_bulk_delete_recipients', array($this, 'handle_bulk_delete_recipients'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -1641,26 +1643,15 @@ class AlumniBulkEmail {
             // Debug logging
             error_log('Alumni Bulk Email - CSV Header: ' . print_r($header, true));
             
-            // Clean up header names and find email column
+            // Clean up header names - just store all columns as-is
             $cleaned_headers = array();
-            $email_col = false;
             
             foreach ($header as $index => $column) {
                 $cleaned_header = trim($column);
                 $cleaned_headers[$index] = $cleaned_header;
-                
-                $column_lower = strtolower($cleaned_header);
-                if (in_array($column_lower, array('email', 'email_address', 'emailaddress', 'e-mail', 'e_mail'))) {
-                    $email_col = $index;
-                    error_log('Alumni Bulk Email - Found email column "' . $cleaned_header . '" at index ' . $index);
-                }
             }
             
-            if ($email_col === false) {
-                error_log('Alumni Bulk Email - No email column found in headers: ' . print_r($cleaned_headers, true));
-                fclose($handle);
-                return $recipients;
-            }
+            error_log('Alumni Bulk Email - CSV columns detected: ' . print_r($cleaned_headers, true));
             
             $row_count = 0;
             $valid_recipients = 0;
@@ -1677,29 +1668,25 @@ class AlumniBulkEmail {
                     continue;
                 }
                 
-                $email = isset($data[$email_col]) ? trim($data[$email_col]) : '';
-                if (is_email($email)) {
-                    $valid_recipients++;
-                    $recipient = array();
-                    
-                    // Store all columns dynamically
-                    foreach ($cleaned_headers as $index => $column_name) {
-                        $value = isset($data[$index]) ? trim($data[$index]) : '';
-                        $recipient[$column_name] = $value;
-                    }
-                    
-                    // Ensure email is properly set
-                    $recipient['email'] = $email;
-                    
-                    // Generate standard fields for backward compatibility
-                    $recipient['name'] = $this->extract_name_field($recipient);
-                    $recipient['first_name'] = $this->extract_first_name($recipient);
-                    $recipient['last_name'] = $this->extract_last_name($recipient);
-                    
-                    $recipients[] = $recipient;
-                } else {
-                    error_log('Alumni Bulk Email - Invalid email in row ' . $row_count . ': "' . $email . '"');
+                // Store all rows regardless of email validation
+                $valid_recipients++;
+                $recipient = array();
+                
+                // Store all columns dynamically
+                foreach ($cleaned_headers as $index => $column_name) {
+                    $value = isset($data[$index]) ? trim($data[$index]) : '';
+                    $recipient[$column_name] = $value;
                 }
+                
+                // Add tags column (initially empty for all recipients)
+                $recipient['tags'] = '';
+                
+                // Generate standard fields for backward compatibility (only if we can extract them)
+                $recipient['name'] = $this->extract_name_field($recipient);
+                $recipient['first_name'] = $this->extract_first_name($recipient);
+                $recipient['last_name'] = $this->extract_last_name($recipient);
+                
+                $recipients[] = $recipient;
             }
             fclose($handle);
             
@@ -2306,7 +2293,8 @@ class AlumniBulkEmail {
                         'email' => $email,
                         'name' => $name,
                         'first_name' => $name ? explode(' ', $name)[0] : '',
-                        'last_name' => $name && strpos($name, ' ') ? substr($name, strpos($name, ' ') + 1) : ''
+                        'last_name' => $name && strpos($name, ' ') ? substr($name, strpos($name, ' ') + 1) : '',
+                        'tags' => ''
                     );
                 }
             } else {
@@ -2317,7 +2305,8 @@ class AlumniBulkEmail {
                         'email' => $email,
                         'name' => '',
                         'first_name' => '',
-                        'last_name' => ''
+                        'last_name' => '',
+                        'tags' => ''
                     );
                 }
             }
@@ -2540,6 +2529,124 @@ class AlumniBulkEmail {
                 'message' => 'Recipient updated successfully',
                 'updated_recipient' => $recipients[$row_index]
             )
+        ));
+        exit;
+    }
+    
+    public function handle_bulk_edit_recipients() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'bulk_edit_recipients') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        $bulk_updates = $_POST['bulk_updates']; // Array of row_index => {field: value}
+        
+        if (!$list_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid list ID')));
+            exit;
+        }
+        
+        global $wpdb;
+        $list = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$list) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'List not found')));
+            exit;
+        }
+        
+        $recipients = json_decode($list->recipients_data, true);
+        if (!$recipients) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid recipients data')));
+            exit;
+        }
+        
+        // Apply bulk updates
+        foreach ($bulk_updates as $row_index => $updates) {
+            $row_index = intval($row_index);
+            if (isset($recipients[$row_index])) {
+                foreach ($updates as $field => $value) {
+                    $sanitized_field = sanitize_text_field($field);
+                    $sanitized_value = sanitize_text_field($value);
+                    $recipients[$row_index][$sanitized_field] = $sanitized_value;
+                }
+            }
+        }
+        
+        // Save back to database
+        $result = $wpdb->update(
+            $wpdb->prefix . 'alumni_recipient_lists',
+            array(
+                'recipients_data' => json_encode($recipients),
+                'updated_at' => current_time('mysql')
+            ),
+            array('id' => $list_id),
+            array('%s', '%s'),
+            array('%d')
+        );
+        
+        if ($result === false) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to update recipients: ' . $wpdb->last_error)));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array('message' => 'Recipients updated successfully')
+        ));
+        exit;
+    }
+    
+    public function handle_bulk_delete_recipients() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'bulk_delete_recipients') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        $recipients_data = $_POST['recipients_data']; // JSON string of updated recipients array
+        
+        if (!$list_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid list ID')));
+            exit;
+        }
+        
+        $recipients = json_decode($recipients_data, true);
+        if (!is_array($recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid recipients data')));
+            exit;
+        }
+        
+        global $wpdb;
+        
+        // Save the updated recipients data
+        $result = $wpdb->update(
+            $wpdb->prefix . 'alumni_recipient_lists',
+            array(
+                'recipients_data' => json_encode($recipients),
+                'total_count' => count($recipients),
+                'updated_at' => current_time('mysql')
+            ),
+            array('id' => $list_id),
+            array('%s', '%d', '%s'),
+            array('%d')
+        );
+        
+        if ($result === false) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to delete recipients: ' . $wpdb->last_error)));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array('message' => 'Recipients deleted successfully', 'new_count' => count($recipients))
         ));
         exit;
     }
@@ -3423,14 +3530,36 @@ class AlumniBulkEmail {
                     '<button type="button" id="close-dynamic-modal" class="button button-primary">Close</button>' +
                     '</div>' +
                     
-                    '<div style="margin-bottom: 15px;">' +
+                    '<div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">' +
+                    '<div>' +
                     '<input type="text" id="dynamic-search" placeholder="Search all columns..." style="width: 300px; padding: 8px;" />' +
                     '<button type="button" id="clear-dynamic-search" class="button" style="margin-left: 10px;">Clear</button>' +
+                    '</div>' +
+                    '<div>' +
+                    '<button type="button" id="bulk-actions-btn" class="button button-secondary" disabled>Bulk Actions</button>' +
+                    '</div>' +
+                    '</div>' +
+                    
+                    '<div id="bulk-actions-panel" style="display: none; background: #f9f9f9; padding: 15px; margin-bottom: 15px; border-radius: 4px; border-left: 4px solid #0073aa;">' +
+                    '<div style="margin-bottom: 10px;"><strong>Bulk Actions for Selected Rows:</strong></div>' +
+                    '<div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">' +
+                    '<div>' +
+                    '<label style="margin-right: 5px;">Add Tag:</label>' +
+                    '<input type="text" id="bulk-tag-input" placeholder="Tag name" style="padding: 5px; width: 150px;" />' +
+                    '<button type="button" id="apply-bulk-tag" class="button button-primary" style="margin-left: 5px;">Add to Selected</button>' +
+                    '</div>' +
+                    '<div>' +
+                    '<button type="button" id="bulk-delete" class="button" style="background: #dc3545; color: white;">Delete Selected</button>' +
+                    '</div>' +
+                    '</div>' +
                     '</div>' +
                     
                     '<div style="overflow: auto; max-height: 500px;">' +
                     '<table id="dynamic-recipients-table" class="wp-list-table widefat fixed striped" style="margin: 0;">' +
                     '<thead><tr>';
+                
+                // Add checkbox column
+                modalHtml += '<th style="width: 40px;"><input type="checkbox" id="select-all-rows" /></th>';
                 
                 // Add column headers
                 columns.forEach(function(column) {
@@ -3447,6 +3576,7 @@ class AlumniBulkEmail {
                 // Add data rows
                 recipients.forEach(function(recipient, index) {
                     modalHtml += '<tr class="dynamic-recipient-row" data-row-index="' + index + '">';
+                    modalHtml += '<td><input type="checkbox" class="row-checkbox" data-row-index="' + index + '" /></td>';
                     columns.forEach(function(column) {
                         var value = recipient[column] || '';
                         modalHtml += '<td class="editable-cell" data-column="' + column + '">' + $('<div>').text(value).html() + '</td>'; // Escape HTML
@@ -3495,6 +3625,43 @@ class AlumniBulkEmail {
                 $('.edit-row-btn').click(function() {
                     var rowIndex = $(this).data('row-index');
                     showEditRowModal(rowIndex);
+                });
+                
+                // Bulk selection functionality
+                $('#select-all-rows').change(function() {
+                    $('.row-checkbox').prop('checked', $(this).is(':checked'));
+                    updateBulkActionsState();
+                });
+                
+                $('.row-checkbox').change(function() {
+                    updateBulkActionsState();
+                    
+                    // Update select-all checkbox state
+                    var totalCheckboxes = $('.row-checkbox').length;
+                    var checkedCheckboxes = $('.row-checkbox:checked').length;
+                    $('#select-all-rows').prop('checked', checkedCheckboxes === totalCheckboxes);
+                });
+                
+                // Bulk actions button
+                $('#bulk-actions-btn').click(function() {
+                    $('#bulk-actions-panel').toggle();
+                });
+                
+                // Apply bulk tag
+                $('#apply-bulk-tag').click(function() {
+                    var tag = $('#bulk-tag-input').val().trim();
+                    if (!tag) {
+                        alert('Please enter a tag name');
+                        return;
+                    }
+                    applyBulkTag(tag);
+                });
+                
+                // Bulk delete
+                $('#bulk-delete').click(function() {
+                    if (confirm('Are you sure you want to delete the selected recipients? This action cannot be undone.')) {
+                        bulkDeleteRows();
+                    }
                 });
                 
                 // Initial count
@@ -3725,6 +3892,165 @@ class AlumniBulkEmail {
                     error: function() {
                         alert('An error occurred while saving changes');
                         saveButton.prop('disabled', false).text('Save Changes');
+                    }
+                });
+            }
+            
+            // Update bulk actions state
+            function updateBulkActionsState() {
+                var checkedCount = $('.row-checkbox:checked').length;
+                var bulkBtn = $('#bulk-actions-btn');
+                
+                if (checkedCount > 0) {
+                    bulkBtn.prop('disabled', false).text('Bulk Actions (' + checkedCount + ' selected)');
+                } else {
+                    bulkBtn.prop('disabled', true).text('Bulk Actions');
+                    $('#bulk-actions-panel').hide();
+                }
+            }
+            
+            // Apply bulk tag
+            function applyBulkTag(tag) {
+                var selectedRows = $('.row-checkbox:checked');
+                var rowIndices = [];
+                
+                selectedRows.each(function() {
+                    rowIndices.push($(this).data('row-index'));
+                });
+                
+                if (rowIndices.length === 0) {
+                    alert('No rows selected');
+                    return;
+                }
+                
+                // Disable the button
+                $('#apply-bulk-tag').prop('disabled', true).text('Applying...');
+                
+                // Update each selected recipient's tags
+                var updatedData = {};
+                rowIndices.forEach(function(rowIndex) {
+                    var currentTags = window.dynamicListData.recipients[rowIndex].tags || '';
+                    var newTags = currentTags ? currentTags + ', ' + tag : tag;
+                    
+                    // Remove duplicates and clean up
+                    var tagArray = newTags.split(',').map(function(t) { return t.trim(); }).filter(function(t) { return t; });
+                    var uniqueTags = [...new Set(tagArray)];
+                    window.dynamicListData.recipients[rowIndex].tags = uniqueTags.join(', ');
+                    
+                    updatedData[rowIndex] = {tags: window.dynamicListData.recipients[rowIndex].tags};
+                });
+                
+                // Send bulk update to server
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'bulk_edit_recipients',
+                        nonce: '<?php echo wp_create_nonce('bulk_edit_recipients'); ?>',
+                        list_id: window.dynamicListData.listData.id,
+                        bulk_updates: updatedData
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            // Update table cells
+                            rowIndices.forEach(function(rowIndex) {
+                                var row = $('tr[data-row-index="' + rowIndex + '"]');
+                                var tagsColumnIndex = window.dynamicListData.columns.indexOf('tags');
+                                if (tagsColumnIndex >= 0) {
+                                    row.find('.editable-cell').eq(tagsColumnIndex).text(window.dynamicListData.recipients[rowIndex].tags);
+                                }
+                            });
+                            
+                            // Clear selection and input
+                            $('.row-checkbox').prop('checked', false);
+                            $('#select-all-rows').prop('checked', false);
+                            $('#bulk-tag-input').val('');
+                            $('#bulk-actions-panel').hide();
+                            updateBulkActionsState();
+                            
+                            // Show success message
+                            var successMsg = $('<div style="position: fixed; top: 50px; right: 20px; background: #46b450; color: white; padding: 10px 15px; border-radius: 4px; z-index: 10002;">✅ Tag applied to ' + rowIndices.length + ' recipients</div>');
+                            $('body').append(successMsg);
+                            setTimeout(function() {
+                                successMsg.fadeOut(500, function() { $(this).remove(); });
+                            }, 3000);
+                            
+                        } else {
+                            alert('Error applying tags: ' + response.data.message);
+                        }
+                        $('#apply-bulk-tag').prop('disabled', false).text('Add to Selected');
+                    },
+                    error: function() {
+                        alert('An error occurred while applying tags');
+                        $('#apply-bulk-tag').prop('disabled', false).text('Add to Selected');
+                    }
+                });
+            }
+            
+            // Bulk delete rows
+            function bulkDeleteRows() {
+                var selectedRows = $('.row-checkbox:checked');
+                var rowIndices = [];
+                
+                selectedRows.each(function() {
+                    rowIndices.push(parseInt($(this).data('row-index')));
+                });
+                
+                if (rowIndices.length === 0) {
+                    alert('No rows selected');
+                    return;
+                }
+                
+                // Disable the button
+                $('#bulk-delete').prop('disabled', true).text('Deleting...');
+                
+                // Remove from local data (in reverse order to maintain indices)
+                rowIndices.sort(function(a, b) { return b - a; });
+                rowIndices.forEach(function(rowIndex) {
+                    window.dynamicListData.recipients.splice(rowIndex, 1);
+                });
+                
+                // Send update to server
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'bulk_delete_recipients',
+                        nonce: '<?php echo wp_create_nonce('bulk_delete_recipients'); ?>',
+                        list_id: window.dynamicListData.listData.id,
+                        recipients_data: JSON.stringify(window.dynamicListData.recipients)
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            // Remove rows from table
+                            selectedRows.closest('tr').remove();
+                            
+                            // Reindex remaining rows
+                            $('#dynamic-recipients-body tr').each(function(index) {
+                                $(this).attr('data-row-index', index);
+                                $(this).find('.row-checkbox').attr('data-row-index', index);
+                                $(this).find('.edit-row-btn').attr('data-row-index', index);
+                            });
+                            
+                            $('#bulk-actions-panel').hide();
+                            updateBulkActionsState();
+                            updateDynamicFilterCount();
+                            
+                            // Show success message
+                            var successMsg = $('<div style="position: fixed; top: 50px; right: 20px; background: #46b450; color: white; padding: 10px 15px; border-radius: 4px; z-index: 10002;">✅ Deleted ' + rowIndices.length + ' recipients</div>');
+                            $('body').append(successMsg);
+                            setTimeout(function() {
+                                successMsg.fadeOut(500, function() { $(this).remove(); });
+                            }, 3000);
+                            
+                        } else {
+                            alert('Error deleting recipients: ' + response.data.message);
+                        }
+                        $('#bulk-delete').prop('disabled', false).text('Delete Selected');
+                    },
+                    error: function() {
+                        alert('An error occurred while deleting recipients');
+                        $('#bulk-delete').prop('disabled', false).text('Delete Selected');
                     }
                 });
             }
