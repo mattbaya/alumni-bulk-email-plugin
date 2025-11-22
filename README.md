@@ -1,4 +1,4 @@
-# Antioch Alumni Bulk Email WordPress Plugin
+# Alumni Bulk Email WordPress Plugin
 
 A comprehensive WordPress plugin for sending bulk emails to alumni with advanced tracking, bounce management, and automatic updates from GitHub.
 
@@ -35,7 +35,7 @@ A comprehensive WordPress plugin for sending bulk emails to alumni with advanced
 ## 📋 Installation
 
 ### Method 1: Download from GitHub
-1. **Download** the latest release from [Releases](https://github.com/mattbaya/antioch-bulk-email-plugin/releases)
+1. **Download** the latest release from [Releases](https://github.com/mattbaya/alumni-bulk-email-plugin/releases)
 2. **Upload** to your WordPress site via Plugins → Add New → Upload Plugin
 3. **Activate** the plugin
 4. **Configure** settings in Bulk Email → Settings
@@ -43,8 +43,8 @@ A comprehensive WordPress plugin for sending bulk emails to alumni with advanced
 ### Method 2: Git Clone (for developers)
 ```bash
 cd /path/to/wordpress/wp-content/plugins/
-git clone https://github.com/mattbaya/antioch-bulk-email-plugin.git
-cd antioch-bulk-email-plugin
+git clone https://github.com/mattbaya/alumni-bulk-email-plugin.git
+cd alumni-bulk-email-plugin
 composer install
 ```
 

@@ -1,15 +1,15 @@
 <?php
 /**
- * Plugin Name: Antioch Alumni Bulk Email
- * Plugin URI: https://github.com/mattbaya/antioch-bulk-email-plugin
+ * Plugin Name: Alumni Bulk Email
+ * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking. Auto-updates from GitHub.
  * Version: 1.0.0
- * Author: Antioch Alumni Association
- * Author URI: https://alumni.antiochians.org
+ * Author: Matt Baya
+ * Author URI: https://mattbaya.net
  * License: GPL v2 or later
- * Text Domain: antioch-bulk-email
- * Update URI: https://github.com/mattbaya/antioch-bulk-email-plugin
- * GitHub Plugin URI: mattbaya/antioch-bulk-email-plugin
+ * Text Domain: alumni-bulk-email
+ * Update URI: https://github.com/mattbaya/alumni-bulk-email-plugin
+ * GitHub Plugin URI: mattbaya/alumni-bulk-email-plugin
  */
 
 // Prevent direct access
@@ -18,10 +18,10 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ANTIOCH_BULK_EMAIL_VERSION', '1.0.0');
-define('ANTIOCH_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
-define('ANTIOCH_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('ANTIOCH_BULK_EMAIL_GITHUB_REPO', 'mattbaya/antioch-bulk-email-plugin');
+define('ALUMNI_BULK_EMAIL_VERSION', '1.0.0');
+define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
+define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
+define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
 
 // Load GitHub Updater if not already loaded
 if (!class_exists('Puc_v4_Factory')) {
@@ -31,13 +31,13 @@ if (!class_exists('Puc_v4_Factory')) {
 // Initialize automatic updates from GitHub
 use Puc_v4_Factory;
 $myUpdateChecker = Puc_v4_Factory::buildUpdateChecker(
-    'https://github.com/' . ANTIOCH_BULK_EMAIL_GITHUB_REPO . '/',
+    'https://github.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO . '/',
     __FILE__,
-    'antioch-bulk-email'
+    'alumni-bulk-email'
 );
 
 // Main plugin class
-class AntiochBulkEmail {
+class AlumniBulkEmail {
     
     public function __construct() {
         add_action('init', array($this, 'init'));
@@ -53,24 +53,24 @@ class AntiochBulkEmail {
     
     public function init() {
         // Load text domain for translations
-        load_plugin_textdomain('antioch-bulk-email', false, dirname(plugin_basename(__FILE__)) . '/languages');
+        load_plugin_textdomain('alumni-bulk-email', false, dirname(plugin_basename(__FILE__)) . '/languages');
     }
     
     public function admin_notices() {
         // Check if Mailgun is configured
-        if (!$this->is_mailgun_configured() && isset($_GET['page']) && strpos($_GET['page'], 'antioch-bulk-email') === 0) {
+        if (!$this->is_mailgun_configured() && isset($_GET['page']) && strpos($_GET['page'], 'alumni-bulk-email') === 0) {
             echo '<div class="notice notice-warning"><p>';
             echo sprintf(
-                __('Antioch Bulk Email: Please configure your Mailgun settings in the <a href="%s">Settings page</a>.', 'antioch-bulk-email'),
-                admin_url('admin.php?page=antioch-bulk-email-settings')
+                __('Alumni Bulk Email: Please configure your Mailgun settings in the <a href="%s">Settings page</a>.', 'alumni-bulk-email'),
+                admin_url('admin.php?page=alumni-bulk-email-settings')
             );
             echo '</p></div>';
         }
     }
     
     private function is_mailgun_configured() {
-        $api_key = get_option('antioch_mailgun_api_key', '');
-        $domain = get_option('antioch_mailgun_domain', '');
+        $api_key = get_option('alumni_mailgun_api_key', '');
+        $domain = get_option('alumni_mailgun_domain', '');
         return !empty($api_key) && !empty($domain);
     }
     
@@ -80,7 +80,7 @@ class AntiochBulkEmail {
         $charset_collate = $wpdb->get_charset_collate();
         
         // Email lists table (saved recipient lists)
-        $table_name_lists = $wpdb->prefix . 'antioch_email_lists';
+        $table_name_lists = $wpdb->prefix . 'alumni_email_lists';
         $sql_lists = "CREATE TABLE $table_name_lists (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
             list_name varchar(255) NOT NULL,
@@ -95,7 +95,7 @@ class AntiochBulkEmail {
         ) $charset_collate;";
         
         // Email subscribers table (individual contacts in lists)
-        $table_name_subscribers = $wpdb->prefix . 'antioch_email_subscribers';
+        $table_name_subscribers = $wpdb->prefix . 'alumni_email_subscribers';
         $sql_subscribers = "CREATE TABLE $table_name_subscribers (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
             list_id mediumint(9) NOT NULL,
@@ -118,7 +118,7 @@ class AntiochBulkEmail {
         ) $charset_collate;";
         
         // Email campaigns table
-        $table_name = $wpdb->prefix . 'antioch_email_campaigns';
+        $table_name = $wpdb->prefix . 'alumni_email_campaigns';
         $sql = "CREATE TABLE $table_name (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
             campaign_name varchar(255) NOT NULL,
@@ -135,7 +135,7 @@ class AntiochBulkEmail {
         ) $charset_collate;";
         
         // Email logs table
-        $table_name_logs = $wpdb->prefix . 'antioch_email_logs';
+        $table_name_logs = $wpdb->prefix . 'alumni_email_logs';
         $sql_logs = "CREATE TABLE $table_name_logs (
             id mediumint(9) NOT NULL AUTO_INCREMENT,
             campaign_id mediumint(9) NOT NULL,
@@ -163,46 +163,46 @@ class AntiochBulkEmail {
         dbDelta($sql_logs);
         
         // Set default options
-        add_option('antioch_mailgun_domain', 'alumni.antiochians.org');
-        add_option('antioch_from_email', 'antiochalumni@alumni.antiochians.org');
-        add_option('antioch_from_name', 'Antioch Alumni Association');
+        add_option('alumni_mailgun_domain', '');
+        add_option('alumni_from_email', '');
+        add_option('alumni_from_name', 'Alumni Association');
     }
     
     public function add_admin_menu() {
         add_menu_page(
-            __('Bulk Email', 'antioch-bulk-email'),
-            __('Bulk Email', 'antioch-bulk-email'),
+            __('Bulk Email', 'alumni-bulk-email'),
+            __('Bulk Email', 'alumni-bulk-email'),
             'manage_options',
-            'antioch-bulk-email',
+            'alumni-bulk-email',
             array($this, 'admin_page'),
             'dashicons-email-alt',
             30
         );
         
         add_submenu_page(
-            'antioch-bulk-email',
-            __('Email Lists', 'antioch-bulk-email'),
-            __('Email Lists', 'antioch-bulk-email'),
+            'alumni-bulk-email',
+            __('Email Lists', 'alumni-bulk-email'),
+            __('Email Lists', 'alumni-bulk-email'),
             'manage_options',
-            'antioch-bulk-email-lists',
+            'alumni-bulk-email-lists',
             array($this, 'email_lists_page')
         );
         
         add_submenu_page(
-            'antioch-bulk-email',
-            __('Email Logs', 'antioch-bulk-email'),
-            __('Email Logs', 'antioch-bulk-email'),
+            'alumni-bulk-email',
+            __('Email Logs', 'alumni-bulk-email'),
+            __('Email Logs', 'alumni-bulk-email'),
             'manage_options',
-            'antioch-bulk-email-logs',
+            'alumni-bulk-email-logs',
             array($this, 'logs_page')
         );
         
         add_submenu_page(
-            'antioch-bulk-email',
-            __('Settings', 'antioch-bulk-email'),
-            __('Settings', 'antioch-bulk-email'),
+            'alumni-bulk-email',
+            __('Settings', 'alumni-bulk-email'),
+            __('Settings', 'alumni-bulk-email'),
             'manage_options',
-            'antioch-bulk-email-settings',
+            'alumni-bulk-email-settings',
             array($this, 'settings_page')
         );
     }
@@ -211,17 +211,17 @@ class AntiochBulkEmail {
         global $wpdb;
         
         // Get available email lists
-        $email_lists = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}antioch_email_lists ORDER BY created_at DESC");
+        $email_lists = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}alumni_email_lists ORDER BY created_at DESC");
         ?>
         <div class="wrap">
-            <h1><?php _e('Antioch Alumni Bulk Email', 'antioch-bulk-email'); ?></h1>
+            <h1><?php _e('Alumni Bulk Email', 'alumni-bulk-email'); ?></h1>
             
             <?php if (!$this->is_mailgun_configured()): ?>
             <div class="notice notice-error">
                 <p>
-                    <?php _e('Mailgun is not configured. Please set up your API credentials in the Settings tab.', 'antioch-bulk-email'); ?>
-                    <a href="<?php echo admin_url('admin.php?page=antioch-bulk-email-settings'); ?>" class="button button-primary">
-                        <?php _e('Configure Now', 'antioch-bulk-email'); ?>
+                    <?php _e('Mailgun is not configured. Please set up your API credentials in the Settings tab.', 'alumni-bulk-email'); ?>
+                    <a href="<?php echo admin_url('admin.php?page=alumni-bulk-email-settings'); ?>" class="button button-primary">
+                        <?php _e('Configure Now', 'alumni-bulk-email'); ?>
                     </a>
                 </p>
             </div>
@@ -559,5 +559,5 @@ class AntiochBulkEmail {
 }
 
 // Initialize the plugin
-new AntiochBulkEmail();
+new AlumniBulkEmail();
 ?>

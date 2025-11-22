@@ -1,12 +1,12 @@
 {
-    "name": "mattbaya/antioch-bulk-email-plugin",
-    "description": "WordPress plugin for bulk email marketing with Mailgun integration",
+    "name": "mattbaya/alumni-bulk-email-plugin",
+    "description": "WordPress plugin for bulk email marketing with Mailgun integration for alumni associations",
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
     "authors": [
         {
-            "name": "Antioch Alumni Association",
-            "email": "antiochalumni@alumni.antiochians.org"
+            "name": "Matt Baya",
+            "email": "matt@baya.net"
         }
     ],
     "require": {
@@ -14,7 +14,7 @@
     },
     "autoload": {
         "psr-4": {
-            "AntiochBulkEmail\\": "src/"
+            "AlumniBulkEmail\\": "src/"
         }
     }
 }
