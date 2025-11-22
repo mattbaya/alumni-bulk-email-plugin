@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.1.9
+ * Version: 0.2.0
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.1.9');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.2.0');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -28,6 +28,7 @@ class AlumniBulkEmail {
         add_action('init', array($this, 'init'));
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('wp_ajax_send_test_email', array($this, 'handle_test_email'));
+        add_action('wp_ajax_send_test_campaign', array($this, 'handle_test_campaign'));
         add_action('wp_ajax_send_bulk_email', array($this, 'handle_bulk_email'));
         add_action('wp_ajax_upload_csv', array($this, 'handle_csv_upload'));
         add_action('wp_ajax_save_campaign', array($this, 'handle_save_campaign'));
@@ -237,6 +238,17 @@ class AlumniBulkEmail {
                                 <p><strong>Recipients:</strong> <span id="preview_recipient_count">0</span></p>
                                 <p><strong>Subject:</strong> <span id="preview_subject">-</span></p>
                             </div>
+                        </div>
+                        
+                        <div style="margin: 20px 0; padding: 15px; background: #f0f8ff; border-left: 4px solid #0073aa;">
+                            <h3 style="margin-top: 0;">📨 Test Your Campaign</h3>
+                            <label for="test_email_address">Test Email Address:</label>
+                            <input type="email" id="test_email_address" name="test_email_address" 
+                                   class="regular-text" placeholder="your@email.com" />
+                            <input type="button" id="send_test_campaign" class="button button-secondary" 
+                                   value="📧 Send Test Email" style="margin-left: 10px;" />
+                            <p class="description">Send a test version of this campaign to verify content and formatting before sending to all recipients.</p>
+                            <div id="test_campaign_result" style="margin-top: 10px;"></div>
                         </div>
                         
                         <p class="submit">
@@ -478,6 +490,60 @@ class AlumniBulkEmail {
                     },
                     error: function() {
                         alert('An error occurred while deleting the campaign.');
+                    }
+                });
+            });
+            
+            // Send Test Campaign
+            $('#send_test_campaign').click(function() {
+                var testEmail = $('#test_email_address').val();
+                var campaignName = $('#campaign_name').val();
+                var subject = $('#subject').val();
+                var htmlContent = tinyMCE.get('html_content').getContent();
+                var button = $(this);
+                var resultDiv = $('#test_campaign_result');
+                
+                if (!testEmail) {
+                    resultDiv.html('<div class="notice notice-error"><p>Please enter a test email address.</p></div>');
+                    return;
+                }
+                
+                if (!campaignName || !subject) {
+                    resultDiv.html('<div class="notice notice-error"><p>Please fill in campaign name and subject.</p></div>');
+                    return;
+                }
+                
+                if (!htmlContent) {
+                    resultDiv.html('<div class="notice notice-error"><p>Please write your email content.</p></div>');
+                    return;
+                }
+                
+                button.prop('disabled', true).val('Sending...');
+                resultDiv.html('<div class="notice notice-info"><p>Sending test email...</p></div>');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'send_test_campaign',
+                        nonce: '<?php echo wp_create_nonce('send_test_campaign'); ?>',
+                        test_email: testEmail,
+                        campaign_name: campaignName,
+                        subject: subject,
+                        html_content: htmlContent
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            resultDiv.html('<div class="notice notice-success"><p>✅ ' + response.data.message + '</p></div>');
+                        } else {
+                            resultDiv.html('<div class="notice notice-error"><p>❌ Error: ' + response.data.message + '</p></div>');
+                        }
+                    },
+                    error: function() {
+                        resultDiv.html('<div class="notice notice-error"><p>❌ An error occurred while sending the test email.</p></div>');
+                    },
+                    complete: function() {
+                        button.prop('disabled', false).val('📧 Send Test Email');
                     }
                 });
             });
@@ -874,6 +940,64 @@ class AlumniBulkEmail {
         } else {
             echo json_encode(array('success' => false, 'data' => array('message' => $result['error'])));
         }
+        exit;
+    }
+    
+    public function handle_test_campaign() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'send_test_campaign') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $test_email = sanitize_email($_POST['test_email']);
+        $campaign_name = sanitize_text_field($_POST['campaign_name']);
+        $subject = sanitize_text_field($_POST['subject']);
+        $html_content = wp_kses_post($_POST['html_content']);
+        
+        if (!is_email($test_email)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid email address')));
+            exit;
+        }
+        
+        if (empty($campaign_name) || empty($subject) || empty($html_content)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Please fill in all campaign fields')));
+            exit;
+        }
+        
+        if (!$this->is_mailgun_configured()) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Mailgun not configured. Please check your settings.')));
+            exit;
+        }
+        
+        // Create sample recipient data for personalization testing
+        $sample_recipient = array(
+            'name' => 'Test User',
+            'first_name' => 'Test',
+            'last_name' => 'User',
+            'email' => $test_email
+        );
+        
+        // Personalize the content with test data
+        $personalized_subject = $this->personalize_content($subject, $sample_recipient);
+        $personalized_html = $this->personalize_content($html_content, $sample_recipient);
+        
+        // Add test indicators to the email
+        $test_subject = "[TEST] {$personalized_subject}";
+        $test_html = '<div style="background: #ffebee; color: #c62828; padding: 15px; border: 2px solid #ef5350; margin-bottom: 20px; text-align: center; font-weight: bold;">
+            🧪 THIS IS A TEST EMAIL for campaign: "' . esc_html($campaign_name) . '"
+        </div>' . $personalized_html;
+        
+        // Send via Mailgun
+        $result = $this->send_mailgun_email($test_email, $test_subject, $test_html);
+        
+        if ($result['success']) {
+            echo json_encode(array('success' => true, 'data' => array('message' => 'Test email sent successfully! Check your inbox for "' . $test_subject . '"')));
+        } else {
+            echo json_encode(array('success' => false, 'data' => array('message' => $result['error'])));
+        }
+        
         exit;
     }
     
