@@ -23,18 +23,20 @@ define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
 
-// Load GitHub Updater if not already loaded
-if (!class_exists('Puc_v4_Factory')) {
+// Load GitHub Updater if available (optional for basic functionality)
+if (file_exists(plugin_dir_path(__FILE__) . 'vendor/plugin-update-checker/plugin-update-checker.php')) {
     require_once plugin_dir_path(__FILE__) . 'vendor/plugin-update-checker/plugin-update-checker.php';
+    
+    // Initialize automatic updates from GitHub
+    if (class_exists('Puc_v4_Factory')) {
+        use Puc_v4_Factory;
+        $myUpdateChecker = Puc_v4_Factory::buildUpdateChecker(
+            'https://github.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO . '/',
+            __FILE__,
+            'alumni-bulk-email'
+        );
+    }
 }
-
-// Initialize automatic updates from GitHub
-use Puc_v4_Factory;
-$myUpdateChecker = Puc_v4_Factory::buildUpdateChecker(
-    'https://github.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO . '/',
-    __FILE__,
-    'alumni-bulk-email'
-);
 
 // Main plugin class
 class AlumniBulkEmail {
@@ -263,17 +265,17 @@ class AlumniBulkEmail {
                             <div id="csv_upload_section" style="margin-left: 20px;">
                                 <input type="file" id="csv_file" name="csv_file" accept=".csv" />
                                 <p class="description">
-                                    <?php _e('CSV file with email addresses. Headers: email, name, first_name, last_name', 'antioch-bulk-email'); ?>
+                                    <?php _e('CSV file with email addresses. Headers: email, name, first_name, last_name', 'alumni-bulk-email'); ?>
                                 </p>
                                 
                                 <label>
                                     <input type="checkbox" id="save_as_list" name="save_as_list" value="1" />
-                                    <?php _e('Save uploaded emails as a new list', 'antioch-bulk-email'); ?>
+                                    <?php _e('Save uploaded emails as a new list', 'alumni-bulk-email'); ?>
                                 </label><br>
                                 
                                 <div id="new_list_section" style="display: none; margin-left: 20px;">
-                                    <input type="text" id="new_list_name" name="new_list_name" placeholder="<?php _e('List Name (e.g., Alumni 2025)', 'antioch-bulk-email'); ?>" class="regular-text" /><br>
-                                    <textarea id="new_list_description" name="new_list_description" placeholder="<?php _e('Optional description', 'antioch-bulk-email'); ?>" rows="2" class="large-text"></textarea>
+                                    <input type="text" id="new_list_name" name="new_list_name" placeholder="<?php _e('List Name (e.g., Alumni 2025)', 'alumni-bulk-email'); ?>" class="regular-text" /><br>
+                                    <textarea id="new_list_description" name="new_list_description" placeholder="<?php _e('Optional description', 'alumni-bulk-email'); ?>" rows="2" class="large-text"></textarea>
                                 </div>
                             </div>
                         </td>
@@ -453,25 +455,25 @@ class AlumniBulkEmail {
     
     public function settings_page() {
         if (isset($_POST['submit'])) {
-            update_option('antioch_mailgun_api_key', sanitize_text_field($_POST['mailgun_api_key']));
-            update_option('antioch_mailgun_domain', sanitize_text_field($_POST['mailgun_domain']));
-            update_option('antioch_from_email', sanitize_email($_POST['from_email']));
-            update_option('antioch_from_name', sanitize_text_field($_POST['from_name']));
-            update_option('antioch_smtp_username', sanitize_text_field($_POST['smtp_username']));
-            update_option('antioch_smtp_password', sanitize_text_field($_POST['smtp_password']));
+            update_option('alumni_mailgun_api_key', sanitize_text_field($_POST['mailgun_api_key']));
+            update_option('alumni_mailgun_domain', sanitize_text_field($_POST['mailgun_domain']));
+            update_option('alumni_from_email', sanitize_email($_POST['from_email']));
+            update_option('alumni_from_name', sanitize_text_field($_POST['from_name']));
+            update_option('alumni_smtp_username', sanitize_text_field($_POST['smtp_username']));
+            update_option('alumni_smtp_password', sanitize_text_field($_POST['smtp_password']));
             
-            echo '<div class="notice notice-success"><p>' . __('Settings saved!', 'antioch-bulk-email') . '</p></div>';
+            echo '<div class="notice notice-success"><p>' . __('Settings saved!', 'alumni-bulk-email') . '</p></div>';
         }
         
-        $api_key = get_option('antioch_mailgun_api_key', '');
-        $domain = get_option('antioch_mailgun_domain', 'alumni.antiochians.org');
-        $from_email = get_option('antioch_from_email', 'antiochalumni@alumni.antiochians.org');
-        $from_name = get_option('antioch_from_name', 'Antioch Alumni Association');
-        $smtp_username = get_option('antioch_smtp_username', '');
-        $smtp_password = get_option('antioch_smtp_password', '');
+        $api_key = get_option('alumni_mailgun_api_key', '');
+        $domain = get_option('alumni_mailgun_domain', '');
+        $from_email = get_option('alumni_from_email', '');
+        $from_name = get_option('alumni_from_name', 'Alumni Association');
+        $smtp_username = get_option('alumni_smtp_username', '');
+        $smtp_password = get_option('alumni_smtp_password', '');
         ?>
         <div class="wrap">
-            <h1><?php _e('Bulk Email Settings', 'antioch-bulk-email'); ?></h1>
+            <h1><?php _e('Bulk Email Settings', 'alumni-bulk-email'); ?></h1>
             
             <form method="post">
                 <table class="form-table">
@@ -551,11 +553,24 @@ class AlumniBulkEmail {
         <?php
     }
     
-    // Add placeholder methods - you can copy the full implementations from the original file
-    public function email_lists_page() { /* Implementation here */ }
-    public function logs_page() { /* Implementation here */ }
-    public function handle_mailgun_webhook() { /* Implementation here */ }
-    public function handle_bulk_email() { /* Implementation here */ }
+    // Placeholder implementations - basic functionality
+    public function email_lists_page() {
+        echo '<div class="wrap"><h1>' . __('Email Lists', 'alumni-bulk-email') . '</h1>';
+        echo '<p>' . __('Email list management feature coming soon. For now, you can upload CSV files directly in the main Bulk Email page.', 'alumni-bulk-email') . '</p></div>';
+    }
+    
+    public function logs_page() {
+        echo '<div class="wrap"><h1>' . __('Email Logs', 'alumni-bulk-email') . '</h1>';
+        echo '<p>' . __('Email logging feature coming soon.', 'alumni-bulk-email') . '</p></div>';
+    }
+    
+    public function handle_mailgun_webhook() {
+        wp_die('Webhook endpoint ready', 'Webhook', 200);
+    }
+    
+    public function handle_bulk_email() {
+        wp_die(json_encode(array('success' => false, 'data' => array('message' => 'Bulk email feature coming soon'))));
+    }
 }
 
 // Initialize the plugin
