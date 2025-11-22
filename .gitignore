@@ -4,7 +4,6 @@
 
 # Composer
 /vendor/
-!/vendor/yahnis-elsts/plugin-update-checker/
 
 # IDE
 .vscode/
