@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.3.5
+ * Version: 0.3.6
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.3.5');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.3.6');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -38,6 +38,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_copy_campaign', array($this, 'handle_copy_campaign'));
         add_action('wp_ajax_load_recipient_list', array($this, 'handle_load_recipient_list'));
         add_action('wp_ajax_upload_save_csv', array($this, 'handle_upload_save_csv'));
+        add_action('wp_ajax_create_recipient_list', array($this, 'handle_create_recipient_list'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -2057,6 +2058,114 @@ class AlumniBulkEmail {
         exit;
     }
     
+    public function handle_create_recipient_list() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'create_recipient_list') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_name = sanitize_text_field($_POST['list_name']);
+        $method = sanitize_text_field($_POST['method']);
+        
+        if (empty($list_name)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'List name is required')));
+            exit;
+        }
+        
+        $recipients = array();
+        
+        if ($method === 'upload') {
+            // Handle CSV upload
+            if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
+                echo json_encode(array('success' => false, 'data' => array('message' => 'No file uploaded or upload error')));
+                exit;
+            }
+            
+            $recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+        } else {
+            // Handle manual entry
+            $manual_data = sanitize_textarea_field($_POST['manual_data']);
+            if (empty($manual_data)) {
+                echo json_encode(array('success' => false, 'data' => array('message' => 'Manual data is required')));
+                exit;
+            }
+            
+            $recipients = $this->parse_manual_data($manual_data);
+        }
+        
+        if (empty($recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients found')));
+            exit;
+        }
+        
+        // Save to database
+        global $wpdb;
+        $result = $wpdb->insert(
+            $wpdb->prefix . 'alumni_recipient_lists',
+            array(
+                'list_name' => $list_name,
+                'recipients_data' => json_encode($recipients),
+                'total_count' => count($recipients)
+            ),
+            array('%s', '%s', '%d')
+        );
+        
+        if ($result === false) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to save list')));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'list_id' => $wpdb->insert_id,
+                'list_name' => $list_name,
+                'total_count' => count($recipients)
+            )
+        ));
+        exit;
+    }
+    
+    private function parse_manual_data($data) {
+        $recipients = array();
+        $lines = array_filter(array_map('trim', explode("\n", $data)));
+        
+        foreach ($lines as $line) {
+            if (empty($line)) continue;
+            
+            // Check if line contains comma (email,name format)
+            if (strpos($line, ',') !== false) {
+                $parts = array_map('trim', explode(',', $line, 2));
+                $email = sanitize_email($parts[0]);
+                $name = isset($parts[1]) ? sanitize_text_field($parts[1]) : '';
+                
+                if (is_email($email)) {
+                    $recipients[] = array(
+                        'email' => $email,
+                        'name' => $name,
+                        'first_name' => $name ? explode(' ', $name)[0] : '',
+                        'last_name' => $name && strpos($name, ' ') ? substr($name, strpos($name, ' ') + 1) : ''
+                    );
+                }
+            } else {
+                // Just email format
+                $email = sanitize_email(trim($line));
+                if (is_email($email)) {
+                    $recipients[] = array(
+                        'email' => $email,
+                        'name' => '',
+                        'first_name' => '',
+                        'last_name' => ''
+                    );
+                }
+            }
+        }
+        
+        return $recipients;
+    }
+    
     public function handle_recreate_tables() {
         header('Content-Type: application/json');
         
@@ -2395,6 +2504,12 @@ class AlumniBulkEmail {
                 <p><strong>Manage your recipient lists:</strong> View, edit, and delete saved recipient lists used in campaigns.</p>
             </div>
             
+            <div style="margin: 20px 0;">
+                <button type="button" id="create-new-list" class="button button-primary">
+                    ➕ Create a List
+                </button>
+            </div>
+            
             <?php if (empty($saved_lists)): ?>
                 <div class="notice notice-warning">
                     <p>No saved recipient lists found. Create lists when uploading CSV files in campaigns.</p>
@@ -2441,6 +2556,11 @@ class AlumniBulkEmail {
         
         <script>
         jQuery(document).ready(function($) {
+            // Create new list modal
+            $('#create-new-list').click(function() {
+                showCreateListModal();
+            });
+            
             // View list functionality will be implemented later
             $('.view-list').click(function() {
                 var listId = $(this).data('list-id');
@@ -2467,6 +2587,120 @@ class AlumniBulkEmail {
                     alert('Delete functionality coming soon');
                 }
             });
+            
+            // Show create list modal
+            function showCreateListModal() {
+                var modalHtml = '<div id="create-list-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000;">' +
+                    '<div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 8px; max-width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">' +
+                    '<h2>➕ Create New Recipients List</h2>' +
+                    
+                    '<div style="margin-bottom: 20px;">' +
+                    '<label><input type="radio" name="create_method" value="upload" checked style="margin-right: 8px;"> Upload CSV File</label><br>' +
+                    '<label style="margin-top: 10px; display: inline-block;"><input type="radio" name="create_method" value="manual" style="margin-right: 8px;"> Manual Entry</label>' +
+                    '</div>' +
+                    
+                    '<div style="margin-bottom: 20px;">' +
+                    '<label for="new-list-name" style="font-weight: bold;">List Name:</label><br>' +
+                    '<input type="text" id="new-list-name" placeholder="e.g., Alumni Newsletter Dec 2024" style="width: 100%; padding: 8px; margin-top: 5px;" />' +
+                    '</div>' +
+                    
+                    '<div id="upload-section">' +
+                    '<label for="csv-upload" style="font-weight: bold;">CSV File:</label><br>' +
+                    '<input type="file" id="csv-upload" accept=".csv" style="margin-top: 5px;" />' +
+                    '<p style="margin-top: 10px; font-size: 14px; color: #666;">CSV should have columns: <strong>email</strong> (required), name, first_name, last_name</p>' +
+                    '</div>' +
+                    
+                    '<div id="manual-section" style="display: none;">' +
+                    '<label for="manual-recipients" style="font-weight: bold;">Recipients:</label><br>' +
+                    '<textarea id="manual-recipients" rows="8" placeholder="Enter recipients one per line in format:\nemail@example.com,John Doe\nemail2@example.com,Jane Smith\n\nOr just email addresses:\nemail@example.com\nemail2@example.com" style="width: 100%; padding: 8px; margin-top: 5px; font-family: monospace;"></textarea>' +
+                    '<p style="margin-top: 10px; font-size: 14px; color: #666;">Format: <code>email@example.com,Full Name</code> or just <code>email@example.com</code></p>' +
+                    '</div>' +
+                    
+                    '<div style="margin-top: 20px; text-align: right;">' +
+                    '<button type="button" id="cancel-create-list" class="button" style="margin-right: 10px;">Cancel</button>' +
+                    '<button type="button" id="save-new-list" class="button button-primary">Create List</button>' +
+                    '</div>' +
+                    '</div></div>';
+                
+                $('body').append(modalHtml);
+                
+                // Modal event handlers
+                $('#create-list-modal input[name="create_method"]').change(function() {
+                    if ($(this).val() === 'upload') {
+                        $('#upload-section').show();
+                        $('#manual-section').hide();
+                    } else {
+                        $('#upload-section').hide();
+                        $('#manual-section').show();
+                    }
+                });
+                
+                $('#cancel-create-list').click(function() {
+                    $('#create-list-modal').remove();
+                });
+                
+                $('#save-new-list').click(function() {
+                    saveNewList();
+                });
+            }
+            
+            // Save new list function
+            function saveNewList() {
+                var listName = $('#new-list-name').val().trim();
+                var method = $('#create-list-modal input[name="create_method"]:checked').val();
+                
+                if (!listName) {
+                    alert('Please enter a list name.');
+                    return;
+                }
+                
+                var formData = new FormData();
+                formData.append('action', 'create_recipient_list');
+                formData.append('nonce', '<?php echo wp_create_nonce('create_recipient_list'); ?>');
+                formData.append('list_name', listName);
+                formData.append('method', method);
+                
+                if (method === 'upload') {
+                    var fileInput = $('#csv-upload')[0];
+                    if (!fileInput.files[0]) {
+                        alert('Please select a CSV file.');
+                        return;
+                    }
+                    formData.append('csv_file', fileInput.files[0]);
+                } else {
+                    var manualData = $('#manual-recipients').val().trim();
+                    if (!manualData) {
+                        alert('Please enter recipient data.');
+                        return;
+                    }
+                    formData.append('manual_data', manualData);
+                }
+                
+                $('#save-new-list').prop('disabled', true).text('Creating...');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(response) {
+                        if (response.success) {
+                            $('#create-list-modal').remove();
+                            alert('List created successfully!');
+                            location.reload(); // Refresh to show new list
+                        } else {
+                            alert('Error creating list: ' + response.data.message);
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while creating the list.');
+                    },
+                    complete: function() {
+                        $('#save-new-list').prop('disabled', false).text('Create List');
+                    }
+                });
+            }
         });
         </script>
         <?php
