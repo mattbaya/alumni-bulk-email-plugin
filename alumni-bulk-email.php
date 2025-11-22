@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.2.0
+ * Version: 0.1.8
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.2.0');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.1.8');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -34,10 +34,6 @@ class AlumniBulkEmail {
         add_action('wp_ajax_load_campaign', array($this, 'handle_load_campaign'));
         add_action('wp_ajax_delete_campaign', array($this, 'handle_delete_campaign'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
-        
-        // Auto-update functionality
-        add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
-        add_filter('plugins_api', array($this, 'plugin_info'), 20, 3);
         
         // Create tables on activation
         register_activation_hook(__FILE__, array($this, 'create_tables'));
@@ -695,10 +691,10 @@ class AlumniBulkEmail {
                 <p>Add this URL to your Mailgun webhook settings for bounce tracking:</p>
                 <code><?php echo admin_url('admin-ajax.php?action=handle_alumni_webhook'); ?></code>
                 
-                <h2>Auto-Updates</h2>
-                <p>This plugin automatically checks for updates from:</p>
-                <code>https://github.com/<?php echo ALUMNI_BULK_EMAIL_GITHUB_REPO; ?></code>
-                <p class="description">Updates will appear in your WordPress admin when available. Current version: <strong><?php echo ALUMNI_BULK_EMAIL_VERSION; ?></strong></p>
+                <h2>Plugin Information</h2>
+                <p>Repository: <code>https://github.com/<?php echo ALUMNI_BULK_EMAIL_GITHUB_REPO; ?></code></p>
+                <p>Current version: <strong><?php echo ALUMNI_BULK_EMAIL_VERSION; ?></strong></p>
+                <p class="description">Download the latest version manually from GitHub when updates are available.</p>
                 
                 <h2>Database</h2>
                 <p>If you're experiencing issues with saving campaigns, you can recreate the database tables:</p>
@@ -1378,80 +1374,6 @@ class AlumniBulkEmail {
         }
     }
     
-    // Auto-update functionality
-    public function check_for_update($transient) {
-        if (empty($transient->checked)) {
-            return $transient;
-        }
-        
-        $plugin_slug = plugin_basename(__FILE__);
-        $plugin_data = get_plugin_data(__FILE__);
-        $current_version = $plugin_data['Version'];
-        
-        // Check for update every 12 hours
-        $last_check = get_option('alumni_bulk_email_last_update_check', 0);
-        if (time() - $last_check < 43200) { // 12 hours
-            return $transient;
-        }
-        
-        $remote_version = $this->get_remote_version();
-        update_option('alumni_bulk_email_last_update_check', time());
-        
-        if (version_compare($current_version, $remote_version, '<')) {
-            $transient->response[$plugin_slug] = (object) array(
-                'slug' => dirname($plugin_slug),
-                'new_version' => $remote_version,
-                'url' => 'https://github.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO,
-                'package' => 'https://github.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO . '/archive/refs/heads/main.zip'
-            );
-        }
-        
-        return $transient;
-    }
-    
-    public function plugin_info($false, $action, $response) {
-        $plugin_slug = dirname(plugin_basename(__FILE__));
-        
-        if ($action !== 'plugin_information' || $response->slug !== $plugin_slug) {
-            return false;
-        }
-        
-        $remote_version = $this->get_remote_version();
-        
-        $response->name = 'Alumni Bulk Email';
-        $response->slug = $plugin_slug;
-        $response->version = $remote_version;
-        $response->author = 'Matt Baya';
-        $response->homepage = 'https://github.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO;
-        $response->short_description = 'Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.';
-        $response->download_link = 'https://github.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO . '/archive/refs/heads/main.zip';
-        $response->sections = array(
-            'description' => 'A comprehensive WordPress plugin for sending bulk emails to alumni with advanced tracking, bounce management, and automatic updates.',
-            'installation' => 'Upload the plugin files to the /wp-content/plugins/ directory, activate the plugin, and configure your Mailgun settings.',
-            'changelog' => 'See GitHub repository for detailed changelog.'
-        );
-        
-        return $response;
-    }
-    
-    private function get_remote_version() {
-        $version_url = 'https://raw.githubusercontent.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO . '/main/alumni-bulk-email.php';
-        
-        $response = wp_remote_get($version_url, array('timeout' => 10));
-        
-        if (is_wp_error($response)) {
-            return ALUMNI_BULK_EMAIL_VERSION; // Return current version if can't check
-        }
-        
-        $body = wp_remote_retrieve_body($response);
-        
-        // Extract version from file header
-        if (preg_match('/\* Version:\s*(.+)/', $body, $matches)) {
-            return trim($matches[1]);
-        }
-        
-        return ALUMNI_BULK_EMAIL_VERSION; // Return current version if can't parse
-    }
 }
 
 // Initialize the plugin
