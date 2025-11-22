@@ -258,6 +258,55 @@ class AlumniBulkEmail {
                             </td>
                         </tr>
                         <tr>
+                            <th><label for="template-typography">Typography</label></th>
+                            <td>
+                                <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+                                    <div>
+                                        <label for="template-font-family" style="display: block; margin-bottom: 5px; font-weight: 600;">Font Family:</label>
+                                        <select id="template-font-family" name="font_family" style="min-width: 180px;">
+                                            <option value="">Default</option>
+                                            <option value="Arial, sans-serif">Arial</option>
+                                            <option value="Helvetica, Arial, sans-serif">Helvetica</option>
+                                            <option value="'Times New Roman', Times, serif">Times New Roman</option>
+                                            <option value="Georgia, serif">Georgia</option>
+                                            <option value="'Courier New', monospace">Courier New</option>
+                                            <option value="Verdana, sans-serif">Verdana</option>
+                                            <option value="'Trebuchet MS', sans-serif">Trebuchet MS</option>
+                                            <option value="'Comic Sans MS', cursive">Comic Sans MS</option>
+                                            <option value="Impact, sans-serif">Impact</option>
+                                            <option value="'Lucida Console', monospace">Lucida Console</option>
+                                            <option value="Tahoma, sans-serif">Tahoma</option>
+                                            <option value="'Palatino Linotype', serif">Palatino</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="template-font-size" style="display: block; margin-bottom: 5px; font-weight: 600;">Font Size:</label>
+                                        <select id="template-font-size" name="font_size" style="min-width: 120px;">
+                                            <option value="">Default</option>
+                                            <option value="10px">10px (Tiny)</option>
+                                            <option value="12px">12px (Small)</option>
+                                            <option value="14px">14px (Normal)</option>
+                                            <option value="16px">16px (Medium)</option>
+                                            <option value="18px">18px (Large)</option>
+                                            <option value="20px">20px (X-Large)</option>
+                                            <option value="24px">24px (XX-Large)</option>
+                                            <option value="28px">28px (Huge)</option>
+                                            <option value="32px">32px (Giant)</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label for="template-text-color" style="display: block; margin-bottom: 5px; font-weight: 600;">Text Color:</label>
+                                        <input type="color" id="template-text-color" name="text_color" value="#000000" style="width: 60px; height: 35px; border: 1px solid #ccc; border-radius: 3px;">
+                                    </div>
+                                </div>
+                                <div style="margin-bottom: 15px;">
+                                    <button type="button" class="button button-small" onclick="applyTypography()" style="margin-right: 10px;">Apply Typography to Content</button>
+                                    <button type="button" class="button button-small" onclick="resetTypography()">Reset to Default</button>
+                                </div>
+                                <p class="description">Select typography settings and click "Apply Typography" to update your template content, or manually edit in the rich text editor below.</p>
+                            </td>
+                        </tr>
+                        <tr>
                             <th><label for="template-content">Content</label></th>
                             <td>
                                 <?php 
@@ -382,6 +431,10 @@ class AlumniBulkEmail {
                     
                     document.getElementById('template-default').checked = template.is_default == 1;
                     document.getElementById('form-title').textContent = 'Edit Template';
+                    
+                    // Load typography settings from template
+                    loadTypographyFromTemplate(template);
+                    
                     document.getElementById('template-form').style.display = 'block';
                 } else {
                     alert('Error loading template: ' + result.data.message);
@@ -857,6 +910,108 @@ class AlumniBulkEmail {
                 closeTemplatePreview();
             }
         });
+        
+        // Typography functions
+        function applyTypography() {
+            const fontFamily = document.getElementById('template-font-family').value;
+            const fontSize = document.getElementById('template-font-size').value;
+            const textColor = document.getElementById('template-text-color').value;
+            
+            // Get current content
+            let currentContent = '';
+            if (typeof tinyMCE !== 'undefined' && tinyMCE.get('template-content')) {
+                currentContent = tinyMCE.get('template-content').getContent();
+            } else {
+                const textarea = document.getElementById('template-content');
+                if (textarea) {
+                    currentContent = textarea.value;
+                }
+            }
+            
+            // If no content, create a basic template structure
+            if (!currentContent || currentContent.trim() === '') {
+                const templateType = document.getElementById('template-type').value;
+                if (templateType === 'header') {
+                    currentContent = '<h1>Your Header Title</h1><p>Add your header content here...</p>';
+                } else if (templateType === 'footer') {
+                    currentContent = '<p>Best regards,<br>Your Organization</p><p>Contact information and links</p>';
+                } else {
+                    currentContent = '<p>Your template content here...</p>';
+                }
+            }
+            
+            // Build CSS styles
+            let styles = [];
+            if (fontFamily) styles.push('font-family: ' + fontFamily);
+            if (fontSize) styles.push('font-size: ' + fontSize);
+            if (textColor && textColor !== '#000000') styles.push('color: ' + textColor);
+            
+            if (styles.length > 0) {
+                const styleString = styles.join('; ');
+                
+                // Wrap content in a div with the styles
+                const styledContent = '<div style="' + styleString + '">' + currentContent + '</div>';
+                
+                // Set the styled content back
+                if (typeof tinyMCE !== 'undefined' && tinyMCE.get('template-content')) {
+                    tinyMCE.get('template-content').setContent(styledContent);
+                } else {
+                    const textarea = document.getElementById('template-content');
+                    if (textarea) {
+                        textarea.value = styledContent;
+                    }
+                }
+                
+                alert('Typography applied successfully!');
+            } else {
+                alert('Please select at least one typography option.');
+            }
+        }
+        
+        function resetTypography() {
+            document.getElementById('template-font-family').value = '';
+            document.getElementById('template-font-size').value = '';
+            document.getElementById('template-text-color').value = '#000000';
+            
+            alert('Typography settings reset to default.');
+        }
+        
+        // Load typography settings when editing existing template
+        function loadTypographyFromTemplate(template) {
+            // Try to extract existing styles from template content
+            const content = template.content;
+            
+            // Look for font-family in style attributes
+            const fontFamilyMatch = content.match(/font-family:\s*([^;]+)/i);
+            if (fontFamilyMatch) {
+                const fontFamily = fontFamilyMatch[1].trim().replace(/['"]/g, '');
+                const fontSelect = document.getElementById('template-font-family');
+                for (let option of fontSelect.options) {
+                    if (option.value.includes(fontFamily) || fontFamily.includes(option.text)) {
+                        fontSelect.value = option.value;
+                        break;
+                    }
+                }
+            }
+            
+            // Look for font-size in style attributes
+            const fontSizeMatch = content.match(/font-size:\s*(\d+px)/i);
+            if (fontSizeMatch) {
+                document.getElementById('template-font-size').value = fontSizeMatch[1];
+            }
+            
+            // Look for color in style attributes
+            const colorMatch = content.match(/color:\s*(#[a-fA-F0-9]{6}|#[a-fA-F0-9]{3}|rgb\([^)]+\))/i);
+            if (colorMatch) {
+                let color = colorMatch[1];
+                // Convert to hex if needed
+                if (color.startsWith('rgb')) {
+                    // Simple conversion for basic colors - full implementation would need more logic
+                    color = '#000000';
+                }
+                document.getElementById('template-text-color').value = color;
+            }
+        }
         </script>
         <?php
     }
