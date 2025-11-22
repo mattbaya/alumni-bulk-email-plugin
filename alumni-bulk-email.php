@@ -47,6 +47,9 @@ class AlumniBulkEmail {
         add_action('wp_ajax_get_list_columns', array($this, 'handle_get_list_columns'));
         add_action('wp_ajax_merge_csv_to_list', array($this, 'handle_merge_csv_to_list'));
         add_action('wp_ajax_export_recipient_list', array($this, 'handle_export_recipient_list'));
+        add_action('wp_ajax_save_header_footer', array($this, 'handle_save_header_footer'));
+        add_action('wp_ajax_delete_header_footer', array($this, 'handle_delete_header_footer'));
+        add_action('wp_ajax_set_default_header_footer', array($this, 'handle_set_default_header_footer'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -137,10 +140,27 @@ class AlumniBulkEmail {
             KEY list_name (list_name)
         ) $charset_collate;";
         
+        // Headers and Footers table
+        $table_headers_footers = $wpdb->prefix . 'alumni_headers_footers';
+        $sql_headers_footers = "CREATE TABLE IF NOT EXISTS $table_headers_footers (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            name varchar(255) NOT NULL,
+            type enum('header', 'footer') NOT NULL,
+            content longtext NOT NULL,
+            is_default tinyint(1) DEFAULT 0,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY name (name),
+            KEY type (type),
+            KEY is_default (is_default)
+        ) $charset_collate;";
+        
         dbDelta($sql_campaigns);
         dbDelta($sql_logs);
         dbDelta($sql_unsubscribes);
         dbDelta($sql_recipient_lists);
+        dbDelta($sql_headers_footers);
         
         // Set default options
         add_option('alumni_mailgun_api_key', '');
@@ -185,6 +205,15 @@ class AlumniBulkEmail {
             'edit_posts',
             'alumni-bounced',
             array($this, 'bounced_page')
+        );
+        
+        add_submenu_page(
+            'alumni-bulk-email',
+            'Headers & Footers',
+            'Headers & Footers',
+            'edit_posts',
+            'alumni-headers-footers',
+            array($this, 'headers_footers_page')
         );
         
         add_submenu_page(
@@ -4967,6 +4996,197 @@ class AlumniBulkEmail {
         .bounce-count.medium {
             background-color: #fff3cd;
             color: #856404;
+        }
+        </style>
+        <?php
+    }
+    
+    public function headers_footers_page() {
+        global $wpdb;
+        $headers = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}alumni_headers_footers WHERE type = 'header' ORDER BY created_at DESC");
+        $footers = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}alumni_headers_footers WHERE type = 'footer' ORDER BY created_at DESC");
+        ?>
+        <div class="wrap">
+            <h1>📄 Headers & Footers</h1>
+            
+            <div class="notice notice-info">
+                <p><strong>Manage email headers and footers:</strong> Create reusable content blocks for your email campaigns. Footers automatically include unsubscribe links.</p>
+            </div>
+            
+            <div class="nav-tab-wrapper">
+                <a href="#headers" class="nav-tab nav-tab-active" id="headers-tab">📑 Headers</a>
+                <a href="#footers" class="nav-tab" id="footers-tab">📋 Footers</a>
+            </div>
+            
+            <!-- Headers Section -->
+            <div id="headers-section" class="tab-content">
+                <div style="margin: 20px 0;">
+                    <button class="button button-primary" id="create-header">➕ Create New Header</button>
+                </div>
+                
+                <?php if (empty($headers)): ?>
+                    <div class="notice notice-warning">
+                        <p>No headers created yet. <a href="#" id="create-first-header">Create your first header</a> to get started.</p>
+                    </div>
+                <?php else: ?>
+                    <table class="wp-list-table widefat fixed striped">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Preview</th>
+                                <th>Default</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($headers as $header): ?>
+                                <tr>
+                                    <td><strong><?php echo esc_html($header->name); ?></strong></td>
+                                    <td>
+                                        <div style="max-height: 100px; overflow: hidden; padding: 10px; background: #f9f9f9; border-radius: 4px;">
+                                            <?php echo wp_kses_post(wp_trim_words($header->content, 20)); ?>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <?php if ($header->is_default): ?>
+                                            <span style="color: #46b450; font-weight: bold;">✓ Default</span>
+                                        <?php else: ?>
+                                            <button class="button button-small set-default" data-id="<?php echo $header->id; ?>" data-type="header">Set Default</button>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo date('M j, Y', strtotime($header->created_at)); ?></td>
+                                    <td>
+                                        <button class="button button-small edit-item" data-id="<?php echo $header->id; ?>" data-type="header">Edit</button>
+                                        <?php if (!$header->is_default): ?>
+                                            <button class="button button-link-delete delete-item" data-id="<?php echo $header->id; ?>" data-type="header">Delete</button>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
+            
+            <!-- Footers Section -->
+            <div id="footers-section" class="tab-content" style="display: none;">
+                <div style="margin: 20px 0;">
+                    <button class="button button-primary" id="create-footer">➕ Create New Footer</button>
+                </div>
+                
+                <div class="notice notice-info">
+                    <p><strong>Note:</strong> All footers automatically include unsubscribe links. You don't need to add them manually.</p>
+                </div>
+                
+                <?php if (empty($footers)): ?>
+                    <div class="notice notice-warning">
+                        <p>No footers created yet. <a href="#" id="create-first-footer">Create your first footer</a> to get started.</p>
+                    </div>
+                <?php else: ?>
+                    <table class="wp-list-table widefat fixed striped">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Preview</th>
+                                <th>Default</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($footers as $footer): ?>
+                                <tr>
+                                    <td><strong><?php echo esc_html($footer->name); ?></strong></td>
+                                    <td>
+                                        <div style="max-height: 100px; overflow: hidden; padding: 10px; background: #f9f9f9; border-radius: 4px;">
+                                            <?php echo wp_kses_post(wp_trim_words($footer->content, 20)); ?>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <?php if ($footer->is_default): ?>
+                                            <span style="color: #46b450; font-weight: bold;">✓ Default</span>
+                                        <?php else: ?>
+                                            <button class="button button-small set-default" data-id="<?php echo $footer->id; ?>" data-type="footer">Set Default</button>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo date('M j, Y', strtotime($footer->created_at)); ?></td>
+                                    <td>
+                                        <button class="button button-small edit-item" data-id="<?php echo $footer->id; ?>" data-type="footer">Edit</button>
+                                        <?php if (!$footer->is_default): ?>
+                                            <button class="button button-link-delete delete-item" data-id="<?php echo $footer->id; ?>" data-type="footer">Delete</button>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
+        </div>
+        
+        <script>
+        jQuery(document).ready(function($) {
+            // Tab switching
+            $('.nav-tab').click(function(e) {
+                e.preventDefault();
+                
+                $('.nav-tab').removeClass('nav-tab-active');
+                $('.tab-content').hide();
+                
+                $(this).addClass('nav-tab-active');
+                
+                if ($(this).attr('id') === 'headers-tab') {
+                    $('#headers-section').show();
+                } else {
+                    $('#footers-section').show();
+                }
+            });
+            
+            // Create new header/footer
+            $('#create-header, #create-first-header').click(function(e) {
+                e.preventDefault();
+                showCreateEditModal('header');
+            });
+            
+            $('#create-footer, #create-first-footer').click(function(e) {
+                e.preventDefault();
+                showCreateEditModal('footer');
+            });
+            
+            // Edit existing item
+            $('.edit-item').click(function() {
+                var id = $(this).data('id');
+                var type = $(this).data('type');
+                showCreateEditModal(type, id);
+            });
+            
+            // Set as default
+            $('.set-default').click(function() {
+                var id = $(this).data('id');
+                var type = $(this).data('type');
+                setAsDefault(id, type);
+            });
+            
+            // Delete item
+            $('.delete-item').click(function() {
+                var id = $(this).data('id');
+                var type = $(this).data('type');
+                
+                if (confirm('Are you sure you want to delete this ' + type + '?')) {
+                    deleteItem(id, type);
+                }
+            });
+        });
+        </script>
+        
+        <style>
+        .tab-content {
+            padding: 20px 0;
+        }
+        
+        .nav-tab-wrapper {
+            margin-bottom: 0;
         }
         </style>
         <?php
