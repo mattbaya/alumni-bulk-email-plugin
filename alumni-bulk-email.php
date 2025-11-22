@@ -32,6 +32,7 @@ require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-file-processor.php';
 require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-email-service.php';
 require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-list-manager.php';
 require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-campaign-manager.php';
+require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-header-footer-manager.php';
 require_once ALUMNI_BULK_EMAIL_PLUGIN_DIR . 'includes/class-ajax-handlers.php';
 
 // Main plugin class

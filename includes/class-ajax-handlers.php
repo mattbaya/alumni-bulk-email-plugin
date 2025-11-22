@@ -15,12 +15,14 @@ class Alumni_Ajax_Handlers {
     private $email_service;
     private $list_manager;
     private $campaign_manager;
+    private $header_footer_manager;
     
     public function __construct() {
         $this->file_processor = new Alumni_File_Processor();
         $this->email_service = new Alumni_Email_Service($this->file_processor);
         $this->list_manager = new Alumni_List_Manager($this->file_processor, $this->email_service);
         $this->campaign_manager = new Alumni_Campaign_Manager($this->email_service, $this->list_manager);
+        $this->header_footer_manager = new Alumni_Header_Footer_Manager();
     }
     
     /**
@@ -55,9 +57,12 @@ class Alumni_Ajax_Handlers {
         add_action('wp_ajax_create_sublist_from_results', array($this, 'handle_create_sublist_from_results'));
         
         // Template handlers
+        add_action('wp_ajax_load_templates', array($this, 'handle_load_templates'));
+        add_action('wp_ajax_get_template', array($this, 'handle_get_template'));
         add_action('wp_ajax_save_header_footer', array($this, 'handle_save_header_footer'));
         add_action('wp_ajax_delete_header_footer', array($this, 'handle_delete_header_footer'));
         add_action('wp_ajax_set_default_header_footer', array($this, 'handle_set_default_header_footer'));
+        add_action('wp_ajax_duplicate_template', array($this, 'handle_duplicate_template'));
         
         // Utility handlers
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -1150,6 +1155,80 @@ class Alumni_Ajax_Handlers {
     }
     
     /**
+     * Load all templates
+     */
+    public function handle_load_templates() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'load_templates') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $type = isset($_POST['type']) ? sanitize_text_field($_POST['type']) : null;
+            
+            $templates = $this->header_footer_manager->get_all_templates($type);
+            $stats = $this->header_footer_manager->get_template_stats();
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'templates' => $templates,
+                    'stats' => $stats
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Get a specific template
+     */
+    public function handle_get_template() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'get_template') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $id = intval($_POST['id']);
+            
+            if (!$id) {
+                throw new Exception('Template ID is required');
+            }
+            
+            $template = $this->header_footer_manager->get_template($id);
+            
+            if (!$template) {
+                throw new Exception('Template not found');
+            }
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array('template' => $template)
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
      * Save header/footer template
      */
     public function handle_save_header_footer() {
@@ -1161,10 +1240,24 @@ class Alumni_Ajax_Handlers {
         }
         
         try {
-            // Note: Headers/Footers functionality is planned for future implementation
+            $name = sanitize_text_field($_POST['name']);
+            $type = sanitize_text_field($_POST['type']);
+            $content = wp_kses_post($_POST['content']);
+            $is_default = isset($_POST['is_default']) && $_POST['is_default'] == '1';
+            $id = isset($_POST['id']) ? intval($_POST['id']) : null;
+            
+            if (empty($name) || empty($type) || empty($content)) {
+                throw new Exception('Name, type, and content are required');
+            }
+            
+            $template_id = $this->header_footer_manager->save_template($name, $type, $content, $is_default, $id);
+            
             echo json_encode(array(
-                'success' => false,
-                'data' => array('message' => 'Headers & Footers management coming soon in next update')
+                'success' => true,
+                'data' => array(
+                    'message' => $id ? 'Template updated successfully' : 'Template created successfully',
+                    'template_id' => $template_id
+                )
             ));
             
         } catch (Exception $e) {
@@ -1189,11 +1282,22 @@ class Alumni_Ajax_Handlers {
         }
         
         try {
-            // Note: Headers/Footers functionality is planned for future implementation
-            echo json_encode(array(
-                'success' => false,
-                'data' => array('message' => 'Headers & Footers management coming soon in next update')
-            ));
+            $id = intval($_POST['id']);
+            
+            if (!$id) {
+                throw new Exception('Template ID is required');
+            }
+            
+            $result = $this->header_footer_manager->delete_template($id);
+            
+            if ($result) {
+                echo json_encode(array(
+                    'success' => true,
+                    'data' => array('message' => 'Template deleted successfully')
+                ));
+            } else {
+                throw new Exception('Failed to delete template');
+            }
             
         } catch (Exception $e) {
             echo json_encode(array(
@@ -1217,10 +1321,60 @@ class Alumni_Ajax_Handlers {
         }
         
         try {
-            // Note: Headers/Footers functionality is planned for future implementation
+            $id = intval($_POST['id']);
+            
+            if (!$id) {
+                throw new Exception('Template ID is required');
+            }
+            
+            $result = $this->header_footer_manager->set_default_template($id);
+            
+            if ($result) {
+                echo json_encode(array(
+                    'success' => true,
+                    'data' => array('message' => 'Default template set successfully')
+                ));
+            } else {
+                throw new Exception('Failed to set default template');
+            }
+            
+        } catch (Exception $e) {
             echo json_encode(array(
                 'success' => false,
-                'data' => array('message' => 'Headers & Footers management coming soon in next update')
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Duplicate template
+     */
+    public function handle_duplicate_template() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'duplicate_template') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $id = intval($_POST['id']);
+            $new_name = isset($_POST['new_name']) ? sanitize_text_field($_POST['new_name']) : null;
+            
+            if (!$id) {
+                throw new Exception('Template ID is required');
+            }
+            
+            $new_template_id = $this->header_footer_manager->duplicate_template($id, $new_name);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => 'Template duplicated successfully',
+                    'template_id' => $new_template_id
+                )
             ));
             
         } catch (Exception $e) {
