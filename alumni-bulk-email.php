@@ -1637,6 +1637,9 @@ class AlumniBulkEmail {
                 return $recipients;
             }
             
+            // Debug logging
+            error_log('Alumni Bulk Email - CSV Header: ' . print_r($header, true));
+            
             // Clean up header names and find email column
             $cleaned_headers = array();
             $email_col = false;
@@ -1646,24 +1649,36 @@ class AlumniBulkEmail {
                 $cleaned_headers[$index] = $cleaned_header;
                 
                 $column_lower = strtolower($cleaned_header);
-                if (in_array($column_lower, array('email', 'email_address', 'emailaddress'))) {
+                if (in_array($column_lower, array('email', 'email_address', 'emailaddress', 'e-mail', 'e_mail'))) {
                     $email_col = $index;
+                    error_log('Alumni Bulk Email - Found email column "' . $cleaned_header . '" at index ' . $index);
                 }
             }
             
             if ($email_col === false) {
+                error_log('Alumni Bulk Email - No email column found in headers: ' . print_r($cleaned_headers, true));
                 fclose($handle);
                 return $recipients;
             }
             
+            $row_count = 0;
+            $valid_recipients = 0;
             while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
-                if (count($data) < count($header)) {
-                    // Skip rows with insufficient data
+                $row_count++;
+                
+                // Debug log each row
+                error_log('Alumni Bulk Email - Row ' . $row_count . ': ' . print_r($data, true));
+                
+                // Allow rows with fewer columns - they might just have empty trailing fields
+                if (count($data) == 0 || (count($data) == 1 && trim($data[0]) == '')) {
+                    // Skip completely empty rows
+                    error_log('Alumni Bulk Email - Skipping empty row ' . $row_count);
                     continue;
                 }
                 
-                $email = trim($data[$email_col]);
+                $email = isset($data[$email_col]) ? trim($data[$email_col]) : '';
                 if (is_email($email)) {
+                    $valid_recipients++;
                     $recipient = array();
                     
                     // Store all columns dynamically
@@ -1681,9 +1696,13 @@ class AlumniBulkEmail {
                     $recipient['last_name'] = $this->extract_last_name($recipient);
                     
                     $recipients[] = $recipient;
+                } else {
+                    error_log('Alumni Bulk Email - Invalid email in row ' . $row_count . ': "' . $email . '"');
                 }
             }
             fclose($handle);
+            
+            error_log('Alumni Bulk Email - CSV parsing complete. Total rows: ' . $row_count . ', Valid recipients: ' . $valid_recipients);
         }
         
         return $recipients;
