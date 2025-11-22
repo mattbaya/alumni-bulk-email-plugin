@@ -44,6 +44,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_edit_recipient_row', array($this, 'handle_edit_recipient_row'));
         add_action('wp_ajax_bulk_edit_recipients', array($this, 'handle_bulk_edit_recipients'));
         add_action('wp_ajax_bulk_delete_recipients', array($this, 'handle_bulk_delete_recipients'));
+        add_action('wp_ajax_get_list_columns', array($this, 'handle_get_list_columns'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -281,6 +282,16 @@ class AlumniBulkEmail {
                                             ?>
                                         </select>
                                         <button type="button" id="preview_saved_list" class="button button-small" style="margin-left: 10px;">Preview List</button>
+                                        
+                                        <div id="email_column_selection" style="display: none; margin-top: 15px; padding: 15px; background: #f9f9f9; border-radius: 4px;">
+                                            <label for="email_column_select"><strong>Select Email Column:</strong></label>
+                                            <select id="email_column_select" name="email_column" style="width: 200px; margin-left: 10px;">
+                                                <option value="">Choose email column...</option>
+                                            </select>
+                                            <p class="description" style="margin-top: 5px;">
+                                                Choose which column contains the email addresses for this campaign.
+                                            </p>
+                                        </div>
                                     </div>
                                     
                                     <div id="upload_csv_section" style="display: none;">
@@ -527,6 +538,18 @@ class AlumniBulkEmail {
                     $('#saved_list_section').hide();
                     $('#upload_csv_section').show();
                     $('#csv_file').attr('required', 'required');
+                }
+            });
+            
+            // Load email column options when saved list is selected
+            $('#saved_recipients_list').change(function() {
+                var listId = $(this).val();
+                if (listId) {
+                    loadEmailColumnOptions(listId);
+                    $('#email_column_selection').show();
+                } else {
+                    $('#email_column_selection').hide();
+                    $('#email_column_select').empty().append('<option value="">Choose email column...</option>');
                 }
             });
             
@@ -966,6 +989,45 @@ class AlumniBulkEmail {
                 html += '</table>';
                 
                 $('#csv_preview').html(html);
+            }
+            
+            // Load email column options for selected list
+            function loadEmailColumnOptions(listId) {
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'get_list_columns',
+                        nonce: '<?php echo wp_create_nonce('get_list_columns'); ?>',
+                        list_id: listId
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            var select = $('#email_column_select');
+                            select.empty();
+                            select.append('<option value="">Choose email column...</option>');
+                            
+                            // Add all columns as options
+                            response.data.columns.forEach(function(column) {
+                                var displayName = column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                                var selected = '';
+                                
+                                // Auto-select likely email columns
+                                var columnLower = column.toLowerCase();
+                                if (columnLower.includes('email') || columnLower.includes('e_mail') || columnLower.includes('e-mail')) {
+                                    selected = ' selected';
+                                }
+                                
+                                select.append('<option value="' + column + '"' + selected + '>' + displayName + '</option>');
+                            });
+                        } else {
+                            alert('Error loading list columns: ' + response.data.message);
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while loading list columns.');
+                    }
+                });
             }
             
             // CSV Preview & Save
@@ -2647,6 +2709,48 @@ class AlumniBulkEmail {
         echo json_encode(array(
             'success' => true,
             'data' => array('message' => 'Recipients deleted successfully', 'new_count' => count($recipients))
+        ));
+        exit;
+    }
+    
+    public function handle_get_list_columns() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'get_list_columns') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        
+        if (!$list_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid list ID')));
+            exit;
+        }
+        
+        global $wpdb;
+        $list = $wpdb->get_row($wpdb->prepare(
+            "SELECT recipients_data FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$list || !$list->recipients_data) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'List not found or empty')));
+            exit;
+        }
+        
+        $recipients = json_decode($list->recipients_data, true);
+        if (empty($recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No recipients data found')));
+            exit;
+        }
+        
+        // Get all column names from the first recipient
+        $columns = array_keys($recipients[0]);
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array('columns' => $columns)
         ));
         exit;
     }
