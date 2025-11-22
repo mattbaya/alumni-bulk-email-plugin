@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Author: Matt Baya
  * Author URI: https://mattbaya.net
  * License: GPL v2 or later
@@ -232,14 +232,24 @@ class AlumniBulkEmail {
                         nonce: '<?php echo wp_create_nonce('send_test_email'); ?>'
                     },
                     success: function(response) {
-                        if (response.success) {
-                            resultDiv.html('<div class="notice notice-success"><p>' + response.data.message + '</p></div>');
-                        } else {
-                            resultDiv.html('<div class="notice notice-error"><p>Error: ' + response.data.message + '</p></div>');
+                        console.log('AJAX Response:', response);
+                        try {
+                            if (typeof response === 'string') {
+                                response = JSON.parse(response);
+                            }
+                            if (response.success) {
+                                resultDiv.html('<div class="notice notice-success"><p>' + response.data.message + '</p></div>');
+                            } else {
+                                resultDiv.html('<div class="notice notice-error"><p>Error: ' + response.data.message + '</p></div>');
+                            }
+                        } catch (e) {
+                            console.error('JSON Parse Error:', e);
+                            resultDiv.html('<div class="notice notice-error"><p>Error: Invalid response format</p></div>');
                         }
                     },
-                    error: function() {
-                        resultDiv.html('<div class="notice notice-error"><p>Failed to send test email. Please check your network connection.</p></div>');
+                    error: function(xhr, status, error) {
+                        console.error('AJAX Error:', xhr, status, error);
+                        resultDiv.html('<div class="notice notice-error"><p>AJAX Error: ' + status + ' - ' + error + '</p></div>');
                     },
                     complete: function() {
                         button.prop('disabled', false).text('Send Test Email');
@@ -252,14 +262,19 @@ class AlumniBulkEmail {
     }
     
     public function handle_test_email() {
+        // Set JSON header
+        header('Content-Type: application/json');
+        
         // Verify nonce
         if (!wp_verify_nonce($_POST['nonce'], 'send_test_email') || !current_user_can('manage_options')) {
-            wp_die(json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized'))));
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
         }
         
         $test_email = sanitize_email($_POST['test_email']);
         if (!is_email($test_email)) {
-            wp_die(json_encode(array('success' => false, 'data' => array('message' => 'Invalid email address'))));
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid email address')));
+            exit;
         }
         
         // Get current settings
@@ -270,7 +285,8 @@ class AlumniBulkEmail {
         
         // Validate settings
         if (empty($api_key) || empty($domain) || empty($from_email)) {
-            wp_die(json_encode(array('success' => false, 'data' => array('message' => 'Please configure all Mailgun settings first'))));
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Please configure all Mailgun settings first')));
+            exit;
         }
         
         // Send test email via Mailgun API
@@ -292,10 +308,11 @@ class AlumniBulkEmail {
         );
         
         if ($result['success']) {
-            wp_die(json_encode(array('success' => true, 'data' => array('message' => 'Test email sent successfully! Check your inbox.'))));
+            echo json_encode(array('success' => true, 'data' => array('message' => 'Test email sent successfully! Check your inbox.')));
         } else {
-            wp_die(json_encode(array('success' => false, 'data' => array('message' => $result['error']))));
+            echo json_encode(array('success' => false, 'data' => array('message' => $result['error'])));
         }
+        exit;
     }
     
     private function send_mailgun_email($to, $subject, $html, $text = '') {
