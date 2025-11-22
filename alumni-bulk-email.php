@@ -19,6 +19,24 @@ if (!defined('ABSPATH')) {
 define('ALUMNI_BULK_EMAIL_VERSION', '1.3.0');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
+define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
+
+// Load GitHub Updater if available (optional for basic functionality)
+if (file_exists(plugin_dir_path(__FILE__) . 'vendor/yahnis-elsts/plugin-update-checker/plugin-update-checker.php')) {
+    require_once plugin_dir_path(__FILE__) . 'vendor/yahnis-elsts/plugin-update-checker/plugin-update-checker.php';
+    
+    // Initialize automatic updates from GitHub
+    if (class_exists('YahnisElsts\PluginUpdateChecker\v5\PucFactory')) {
+        $myUpdateChecker = YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+            'https://github.com/' . ALUMNI_BULK_EMAIL_GITHUB_REPO . '/',
+            __FILE__,
+            'alumni-bulk-email'
+        );
+        
+        // Set the branch that contains the stable release (optional)
+        $myUpdateChecker->setBranch('main');
+    }
+}
 
 // Main plugin class
 class AlumniBulkEmail {
@@ -688,6 +706,11 @@ class AlumniBulkEmail {
                 <h2>Webhook URL</h2>
                 <p>Add this URL to your Mailgun webhook settings for bounce tracking:</p>
                 <code><?php echo admin_url('admin-ajax.php?action=handle_alumni_webhook'); ?></code>
+                
+                <h2>Auto-Updates</h2>
+                <p>This plugin automatically checks for updates from:</p>
+                <code>https://github.com/<?php echo ALUMNI_BULK_EMAIL_GITHUB_REPO; ?></code>
+                <p class="description">Updates will appear in your WordPress admin when available. Current version: <strong><?php echo ALUMNI_BULK_EMAIL_VERSION; ?></strong></p>
                 
                 <?php submit_button(); ?>
             </form>

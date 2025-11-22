@@ -1,0 +1,14 @@
+# WordPress
+.DS_Store
+.env
+
+# Composer
+/vendor/
+!/vendor/yahnis-elsts/plugin-update-checker/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
