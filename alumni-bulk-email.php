@@ -50,6 +50,7 @@ class AlumniBulkEmail {
         add_action('wp_ajax_save_header_footer', array($this, 'handle_save_header_footer'));
         add_action('wp_ajax_delete_header_footer', array($this, 'handle_delete_header_footer'));
         add_action('wp_ajax_set_default_header_footer', array($this, 'handle_set_default_header_footer'));
+        add_action('wp_ajax_create_sublist_from_results', array($this, 'handle_create_sublist_from_results'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -3156,6 +3157,80 @@ class AlumniBulkEmail {
         return $csv_content;
     }
     
+    public function handle_create_sublist_from_results() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'create_sublist_from_results') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        $sublist_name = sanitize_text_field($_POST['sublist_name']);
+        $filtered_recipients_json = sanitize_textarea_field($_POST['filtered_recipients']);
+        
+        if (!$list_id || empty($sublist_name) || empty($filtered_recipients_json)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Missing required data')));
+            exit;
+        }
+        
+        $filtered_recipients = json_decode($filtered_recipients_json, true);
+        if (empty($filtered_recipients) || !is_array($filtered_recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid recipients data')));
+            exit;
+        }
+        
+        global $wpdb;
+        
+        // Check if sublist name already exists
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->prefix}alumni_recipient_lists WHERE list_name = %s",
+            $sublist_name
+        ));
+        
+        if ($existing > 0) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'A list with this name already exists')));
+            exit;
+        }
+        
+        try {
+            // Create the new sublist
+            $result = $wpdb->insert(
+                $wpdb->prefix . 'alumni_recipient_lists',
+                array(
+                    'list_name' => $sublist_name,
+                    'description' => 'Sublist created from filtered results of list ID ' . $list_id,
+                    'recipients_data' => json_encode($filtered_recipients),
+                    'total_count' => count($filtered_recipients)
+                ),
+                array('%s', '%s', '%s', '%d')
+            );
+            
+            if ($result === false) {
+                throw new Exception('Failed to create sublist: ' . $wpdb->last_error);
+            }
+            
+            $new_list_id = $wpdb->insert_id;
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => 'Sublist "' . $sublist_name . '" created successfully with ' . count($filtered_recipients) . ' recipients',
+                    'list_id' => $new_list_id,
+                    'list_name' => $sublist_name
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error creating sublist: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
     public function handle_recreate_tables() {
         header('Content-Type: application/json');
         
@@ -4148,6 +4223,11 @@ class AlumniBulkEmail {
                     showEditRowModal(rowIndex);
                 });
                 
+                // Create sublist from filtered results
+                $('#create-filtered-sublist').click(function() {
+                    createSublistFromResults();
+                });
+                
                 // Bulk selection functionality
                 $('#select-all-rows').change(function() {
                     $('.row-checkbox').prop('checked', $(this).is(':checked'));
@@ -4287,6 +4367,61 @@ class AlumniBulkEmail {
                 } else {
                     $('#dynamic-filter-count').text('Showing ' + visibleCount + ' of ' + totalCount + ' recipients');
                 }
+            }
+            
+            // Create sublist from filtered results
+            function createSublistFromResults() {
+                if (!window.dynamicListData || !window.dynamicListData.filteredRecipients) {
+                    alert('No filtered data available');
+                    return;
+                }
+                
+                var filteredRecipients = window.dynamicListData.filteredRecipients;
+                if (filteredRecipients.length === 0) {
+                    alert('No recipients in filtered results');
+                    return;
+                }
+                
+                // Prompt for new list name
+                var defaultName = window.dynamicListData.listData.list_name + ' - Filtered (' + new Date().toLocaleDateString() + ')';
+                var newListName = prompt('Enter name for the new list:', defaultName);
+                
+                if (!newListName) {
+                    return; // User cancelled
+                }
+                
+                // Disable the button
+                var button = $('#create-filtered-sublist');
+                button.prop('disabled', true).text('Creating sublist...');
+                
+                // Create the new list via AJAX
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'create_sublist_from_results',
+                        nonce: '<?php echo wp_create_nonce('create_sublist_from_results'); ?>',
+                        list_name: newListName,
+                        recipients_data: JSON.stringify(filteredRecipients)
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            alert('Sublist "' + newListName + '" created successfully with ' + filteredRecipients.length + ' recipients!');
+                            $('#dynamic-list-modal').remove();
+                            // Optionally reload the page to show the new list
+                            if (confirm('Would you like to refresh the page to see the new list?')) {
+                                location.reload();
+                            }
+                        } else {
+                            alert('Error creating sublist: ' + response.data.message);
+                        }
+                        button.prop('disabled', false).text('Create Sublist from Results');
+                    },
+                    error: function() {
+                        alert('An error occurred while creating the sublist');
+                        button.prop('disabled', false).text('Create Sublist from Results');
+                    }
+                });
             }
             
             // Show edit row modal
