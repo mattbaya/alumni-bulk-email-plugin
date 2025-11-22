@@ -206,10 +206,262 @@ class AlumniBulkEmail {
         echo '<h1>Headers & Footers</h1>';
         echo '<p>Create reusable email templates for consistent branding across all campaigns.</p>';
         
-        // This would contain the headers/footers management UI
-        echo '<div class="notice notice-info">';
-        echo '<p>Headers & Footers management interface coming soon in the next update.</p>';
-        echo '</div>';
+        // Load header/footer manager for data
+        $header_footer_manager = new Alumni_Header_Footer_Manager();
+        $templates = $header_footer_manager->get_all_templates();
+        $stats = $header_footer_manager->get_template_stats();
+        
+        ?>
+        <div class="template-management">
+            <!-- Template Statistics -->
+            <div class="template-stats" style="display: flex; gap: 20px; margin: 20px 0;">
+                <div class="stat-box" style="background: #f0f0f1; padding: 15px; border-radius: 5px;">
+                    <h3>Total Templates: <?php echo $stats['total']; ?></h3>
+                </div>
+                <div class="stat-box" style="background: #f0f0f1; padding: 15px; border-radius: 5px;">
+                    <h3>Headers: <?php echo $stats['headers']; ?></h3>
+                </div>
+                <div class="stat-box" style="background: #f0f0f1; padding: 15px; border-radius: 5px;">
+                    <h3>Footers: <?php echo $stats['footers']; ?></h3>
+                </div>
+            </div>
+
+            <!-- Create New Template Button -->
+            <div style="margin: 20px 0;">
+                <button type="button" class="button button-primary" onclick="showCreateTemplateForm()">
+                    Create New Template
+                </button>
+                <button type="button" class="button" onclick="loadTemplates()">
+                    Refresh Templates
+                </button>
+            </div>
+
+            <!-- Create/Edit Template Form -->
+            <div id="template-form" style="display: none; background: #fff; padding: 20px; border: 1px solid #ccd0d4; margin: 20px 0;">
+                <h3 id="form-title">Create New Template</h3>
+                <form id="template-form-data">
+                    <input type="hidden" id="template-id" name="id" value="">
+                    
+                    <table class="form-table">
+                        <tr>
+                            <th><label for="template-name">Template Name</label></th>
+                            <td><input type="text" id="template-name" name="name" class="regular-text" required></td>
+                        </tr>
+                        <tr>
+                            <th><label for="template-type">Type</label></th>
+                            <td>
+                                <select id="template-type" name="type" required>
+                                    <option value="">Select Type</option>
+                                    <option value="header">Header</option>
+                                    <option value="footer">Footer</option>
+                                </select>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="template-content">Content</label></th>
+                            <td>
+                                <textarea id="template-content" name="content" rows="10" class="large-text" required></textarea>
+                                <p class="description">You can use HTML formatting. Common tags: &lt;h1&gt;, &lt;p&gt;, &lt;strong&gt;, &lt;br&gt;, &lt;a&gt;</p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th><label for="template-default">Set as Default</label></th>
+                            <td>
+                                <input type="checkbox" id="template-default" name="is_default" value="1">
+                                <span class="description">Make this the default template for its type</span>
+                            </td>
+                        </tr>
+                    </table>
+                    
+                    <p class="submit">
+                        <button type="submit" class="button button-primary">Save Template</button>
+                        <button type="button" class="button" onclick="hideCreateTemplateForm()">Cancel</button>
+                    </p>
+                </form>
+            </div>
+
+            <!-- Templates List -->
+            <div id="templates-list">
+                <h3>Existing Templates</h3>
+                <div id="templates-container">
+                    <?php if (empty($templates)): ?>
+                        <p>No templates found. Create your first template above.</p>
+                    <?php else: ?>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px;">
+                            <?php foreach ($templates as $template): ?>
+                                <div class="template-card" style="border: 1px solid #ccd0d4; padding: 15px; border-radius: 5px; background: #fff;">
+                                    <h4><?php echo esc_html($template->name); ?>
+                                        <?php if ($template->is_default): ?>
+                                            <span style="background: #46b450; color: white; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 10px;">DEFAULT</span>
+                                        <?php endif; ?>
+                                    </h4>
+                                    <p><strong>Type:</strong> <?php echo ucfirst($template->type); ?></p>
+                                    <div style="max-height: 100px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin: 10px 0; background: #f9f9f9;">
+                                        <?php echo wp_kses_post($template->content); ?>
+                                    </div>
+                                    <div class="template-actions">
+                                        <button type="button" class="button button-small" onclick="editTemplate(<?php echo $template->id; ?>)">Edit</button>
+                                        <button type="button" class="button button-small" onclick="duplicateTemplate(<?php echo $template->id; ?>)">Duplicate</button>
+                                        <?php if (!$template->is_default): ?>
+                                            <button type="button" class="button button-small" onclick="setDefaultTemplate(<?php echo $template->id; ?>)">Set Default</button>
+                                            <button type="button" class="button button-small" style="color: #d63638;" onclick="deleteTemplate(<?php echo $template->id; ?>)">Delete</button>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <script>
+        // Template management JavaScript functions
+        function showCreateTemplateForm() {
+            document.getElementById('template-form').style.display = 'block';
+            document.getElementById('form-title').textContent = 'Create New Template';
+            document.getElementById('template-form-data').reset();
+            document.getElementById('template-id').value = '';
+        }
+
+        function hideCreateTemplateForm() {
+            document.getElementById('template-form').style.display = 'none';
+        }
+
+        function loadTemplates() {
+            location.reload(); // Simple refresh for now
+        }
+
+        function editTemplate(id) {
+            // Fetch template data and populate form
+            const data = new FormData();
+            data.append('action', 'get_template');
+            data.append('nonce', '<?php echo wp_create_nonce("get_template"); ?>');
+            data.append('id', id);
+
+            fetch(ajaxurl, {
+                method: 'POST',
+                body: data
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    const template = result.data.template;
+                    document.getElementById('template-id').value = template.id;
+                    document.getElementById('template-name').value = template.name;
+                    document.getElementById('template-type').value = template.type;
+                    document.getElementById('template-content').value = template.content;
+                    document.getElementById('template-default').checked = template.is_default == 1;
+                    document.getElementById('form-title').textContent = 'Edit Template';
+                    document.getElementById('template-form').style.display = 'block';
+                } else {
+                    alert('Error loading template: ' + result.data.message);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        }
+
+        function duplicateTemplate(id) {
+            const newName = prompt('Enter name for duplicated template:');
+            if (!newName) return;
+
+            const data = new FormData();
+            data.append('action', 'duplicate_template');
+            data.append('nonce', '<?php echo wp_create_nonce("duplicate_template"); ?>');
+            data.append('id', id);
+            data.append('new_name', newName);
+
+            fetch(ajaxurl, {
+                method: 'POST',
+                body: data
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    alert('Template duplicated successfully!');
+                    loadTemplates();
+                } else {
+                    alert('Error: ' + result.data.message);
+                }
+            });
+        }
+
+        function setDefaultTemplate(id) {
+            if (!confirm('Set this template as default for its type?')) return;
+
+            const data = new FormData();
+            data.append('action', 'set_default_header_footer');
+            data.append('nonce', '<?php echo wp_create_nonce("set_default_header_footer"); ?>');
+            data.append('id', id);
+
+            fetch(ajaxurl, {
+                method: 'POST',
+                body: data
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    alert('Default template set successfully!');
+                    loadTemplates();
+                } else {
+                    alert('Error: ' + result.data.message);
+                }
+            });
+        }
+
+        function deleteTemplate(id) {
+            if (!confirm('Are you sure you want to delete this template?')) return;
+
+            const data = new FormData();
+            data.append('action', 'delete_header_footer');
+            data.append('nonce', '<?php echo wp_create_nonce("delete_header_footer"); ?>');
+            data.append('id', id);
+
+            fetch(ajaxurl, {
+                method: 'POST',
+                body: data
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    alert('Template deleted successfully!');
+                    loadTemplates();
+                } else {
+                    alert('Error: ' + result.data.message);
+                }
+            });
+        }
+
+        // Handle form submission
+        document.getElementById('template-form-data').addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(this);
+            formData.append('action', 'save_header_footer');
+            formData.append('nonce', '<?php echo wp_create_nonce("save_header_footer"); ?>');
+
+            fetch(ajaxurl, {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    alert('Template saved successfully!');
+                    hideCreateTemplateForm();
+                    loadTemplates();
+                } else {
+                    alert('Error: ' + result.data.message);
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error);
+            });
+        });
+        </script>
+        <?php
         
         echo '</div>';
     }
