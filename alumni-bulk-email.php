@@ -3,7 +3,7 @@
  * Plugin Name: Alumni Bulk Email
  * Plugin URI: https://github.com/mattbaya/alumni-bulk-email-plugin
  * Description: Send bulk emails to alumni with Mailgun integration, CSV logging, and bounce tracking.
- * Version: 0.3.4
+ * Version: 0.3.5
  * Author: Matt Baya
  * Author URI: https://svaha.com
  * License: GPL v2 or later
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('ALUMNI_BULK_EMAIL_VERSION', '0.3.4');
+define('ALUMNI_BULK_EMAIL_VERSION', '0.3.5');
 define('ALUMNI_BULK_EMAIL_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ALUMNI_BULK_EMAIL_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ALUMNI_BULK_EMAIL_GITHUB_REPO', 'mattbaya/alumni-bulk-email-plugin');
@@ -36,6 +36,8 @@ class AlumniBulkEmail {
         add_action('wp_ajax_view_campaign', array($this, 'handle_view_campaign'));
         add_action('wp_ajax_delete_campaign', array($this, 'handle_delete_campaign'));
         add_action('wp_ajax_copy_campaign', array($this, 'handle_copy_campaign'));
+        add_action('wp_ajax_load_recipient_list', array($this, 'handle_load_recipient_list'));
+        add_action('wp_ajax_upload_save_csv', array($this, 'handle_upload_save_csv'));
         add_action('wp_ajax_nopriv_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_handle_alumni_webhook', array($this, 'handle_mailgun_webhook'));
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -112,9 +114,24 @@ class AlumniBulkEmail {
             UNIQUE KEY unsubscribe_token (unsubscribe_token)
         ) $charset_collate;";
         
+        // Recipients lists table
+        $table_recipient_lists = $wpdb->prefix . 'alumni_recipient_lists';
+        $sql_recipient_lists = "CREATE TABLE IF NOT EXISTS $table_recipient_lists (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            list_name varchar(255) NOT NULL,
+            description text,
+            recipients_data longtext NOT NULL,
+            total_count int DEFAULT 0,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY list_name (list_name)
+        ) $charset_collate;";
+        
         dbDelta($sql_campaigns);
         dbDelta($sql_logs);
         dbDelta($sql_unsubscribes);
+        dbDelta($sql_recipient_lists);
         
         // Set default options
         add_option('alumni_mailgun_api_key', '');
@@ -132,6 +149,15 @@ class AlumniBulkEmail {
             array($this, 'admin_page'),
             'dashicons-email-alt',
             30
+        );
+        
+        add_submenu_page(
+            'alumni-bulk-email',
+            'Recipients Lists',
+            'Recipients Lists',
+            'edit_posts',
+            'alumni-recipient-lists',
+            array($this, 'recipient_lists_page')
         );
         
         add_submenu_page(
@@ -204,14 +230,44 @@ class AlumniBulkEmail {
                             </tr>
                             <tr>
                                 <th scope="row">
-                                    <label for="csv_file">Recipients CSV File</label>
+                                    <label>Recipients Source</label>
                                 </th>
                                 <td>
-                                    <input type="file" id="csv_file" name="csv_file" accept=".csv" required />
-                                    <p class="description">
-                                        CSV with columns: <strong>email</strong> (required), name, first_name, last_name<br>
-                                        <button type="button" id="preview_csv" class="button button-small" style="margin-top: 5px;">Preview Recipients</button>
-                                    </p>
+                                    <div style="margin-bottom: 15px;">
+                                        <label>
+                                            <input type="radio" name="recipients_source" value="saved_list" checked>
+                                            Use Saved Recipients List
+                                        </label>
+                                        <br>
+                                        <label style="margin-top: 10px; display: inline-block;">
+                                            <input type="radio" name="recipients_source" value="upload_csv">
+                                            Upload New CSV File
+                                        </label>
+                                    </div>
+                                    
+                                    <div id="saved_list_section">
+                                        <select id="saved_recipients_list" name="saved_recipients_list" style="width: 300px;">
+                                            <option value="">Select a saved list...</option>
+                                            <?php
+                                            global $wpdb;
+                                            $saved_lists = $wpdb->get_results("SELECT id, list_name, total_count FROM {$wpdb->prefix}alumni_recipient_lists ORDER BY updated_at DESC");
+                                            foreach ($saved_lists as $list) {
+                                                echo '<option value="' . $list->id . '">' . esc_html($list->list_name) . ' (' . $list->total_count . ' recipients)</option>';
+                                            }
+                                            ?>
+                                        </select>
+                                        <button type="button" id="preview_saved_list" class="button button-small" style="margin-left: 10px;">Preview List</button>
+                                    </div>
+                                    
+                                    <div id="upload_csv_section" style="display: none;">
+                                        <input type="file" id="csv_file" name="csv_file" accept=".csv" />
+                                        <input type="text" id="new_list_name" name="new_list_name" placeholder="List name (e.g., 'Alumni News 11-22-2024')" style="width: 300px; margin-left: 10px;" />
+                                        <p class="description">
+                                            CSV with columns: <strong>email</strong> (required), name, first_name, last_name<br>
+                                            <button type="button" id="preview_csv" class="button button-small" style="margin-top: 5px;">Preview & Save List</button>
+                                        </p>
+                                    </div>
+                                    
                                     <div id="csv_preview" style="display: none; margin-top: 10px;"></div>
                                 </td>
                             </tr>
@@ -436,6 +492,50 @@ class AlumniBulkEmail {
         <script>
         jQuery(document).ready(function($) {
             let csvData = [];
+            
+            // Recipients source radio button handling
+            $('input[name="recipients_source"]').change(function() {
+                if ($(this).val() === 'saved_list') {
+                    $('#saved_list_section').show();
+                    $('#upload_csv_section').hide();
+                    $('#csv_file').removeAttr('required');
+                } else {
+                    $('#saved_list_section').hide();
+                    $('#upload_csv_section').show();
+                    $('#csv_file').attr('required', 'required');
+                }
+            });
+            
+            // Preview saved list
+            $('#preview_saved_list').click(function() {
+                var listId = $('#saved_recipients_list').val();
+                if (!listId) {
+                    alert('Please select a list first.');
+                    return;
+                }
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'load_recipient_list',
+                        nonce: '<?php echo wp_create_nonce('load_recipient_list'); ?>',
+                        list_id: listId
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            csvData = response.data.recipients;
+                            displayRecipientsSummary();
+                            $('#csv_preview').show();
+                        } else {
+                            alert('Error loading list: ' + response.data.message);
+                        }
+                    },
+                    error: function() {
+                        alert('An error occurred while loading the list.');
+                    }
+                });
+            });
             
             // Update campaign preview
             function updatePreview() {
@@ -844,7 +944,7 @@ class AlumniBulkEmail {
                 $('#csv_preview').html(html);
             }
             
-            // CSV Preview
+            // CSV Preview & Save
             $('#preview_csv').click(function() {
                 var fileInput = $('#csv_file')[0];
                 if (!fileInput.files[0]) {
@@ -852,12 +952,19 @@ class AlumniBulkEmail {
                     return;
                 }
                 
+                var listName = $('#new_list_name').val().trim();
+                if (!listName) {
+                    alert('Please enter a name for this recipients list.');
+                    return;
+                }
+                
                 var formData = new FormData();
                 formData.append('csv_file', fileInput.files[0]);
-                formData.append('action', 'upload_csv');
-                formData.append('nonce', '<?php echo wp_create_nonce('upload_csv'); ?>');
+                formData.append('list_name', listName);
+                formData.append('action', 'upload_save_csv');
+                formData.append('nonce', '<?php echo wp_create_nonce('upload_save_csv'); ?>');
                 
-                $('#csv_preview').html('<p>Loading preview...</p>').show();
+                $('#csv_preview').html('<p>Processing and saving list...</p>').show();
                 
                 $.ajax({
                     url: ajaxurl,
@@ -870,7 +977,7 @@ class AlumniBulkEmail {
                             csvData = response.data.recipients;
                             updatePreview();
                             
-                            var html = '<h4>✅ CSV Preview (' + csvData.length + ' recipients)</h4>';
+                            var html = '<h4>✅ Recipients List Saved: "' + listName + '" (' + csvData.length + ' recipients)</h4>';
                             html += '<div style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; padding: 10px;">';
                             html += '<table style="width: 100%; border-collapse: collapse;">';
                             html += '<tr style="background: #f9f9f9;"><th>Email</th><th>Name</th></tr>';
@@ -1854,6 +1961,102 @@ class AlumniBulkEmail {
         exit;
     }
     
+    public function handle_load_recipient_list() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'load_recipient_list') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        $list_id = intval($_POST['list_id']);
+        
+        if (!$list_id) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Invalid list ID')));
+            exit;
+        }
+        
+        global $wpdb;
+        $list = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$wpdb->prefix}alumni_recipient_lists WHERE id = %d",
+            $list_id
+        ));
+        
+        if (!$list) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'List not found')));
+            exit;
+        }
+        
+        $recipients = json_decode($list->recipients_data, true);
+        if (!$recipients) {
+            $recipients = array();
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'recipients' => $recipients,
+                'list_name' => $list->list_name
+            )
+        ));
+        exit;
+    }
+    
+    public function handle_upload_save_csv() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'upload_save_csv') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No file uploaded or upload error')));
+            exit;
+        }
+        
+        $list_name = sanitize_text_field($_POST['list_name']);
+        if (empty($list_name)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'List name is required')));
+            exit;
+        }
+        
+        // Parse CSV
+        $recipients = $this->parse_csv_file($_FILES['csv_file']['tmp_name']);
+        
+        if (empty($recipients)) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'No valid recipients found in CSV')));
+            exit;
+        }
+        
+        // Save to database
+        global $wpdb;
+        $result = $wpdb->insert(
+            $wpdb->prefix . 'alumni_recipient_lists',
+            array(
+                'list_name' => $list_name,
+                'recipients_data' => json_encode($recipients),
+                'total_count' => count($recipients)
+            ),
+            array('%s', '%s', '%d')
+        );
+        
+        if ($result === false) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Failed to save list')));
+            exit;
+        }
+        
+        echo json_encode(array(
+            'success' => true,
+            'data' => array(
+                'recipients' => $recipients,
+                'list_id' => $wpdb->insert_id,
+                'list_name' => $list_name
+            )
+        ));
+        exit;
+    }
+    
     public function handle_recreate_tables() {
         header('Content-Type: application/json');
         
@@ -2179,6 +2382,187 @@ class AlumniBulkEmail {
             $error_message = isset($error_data['message']) ? $error_data['message'] : 'Unknown error';
             return array('success' => false, 'error' => "Mailgun API error ({$response_code}): {$error_message}");
         }
+    }
+    
+    public function recipient_lists_page() {
+        global $wpdb;
+        $saved_lists = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}alumni_recipient_lists ORDER BY updated_at DESC");
+        ?>
+        <div class="wrap">
+            <h1>📧 Recipients Lists</h1>
+            
+            <div class="notice notice-info">
+                <p><strong>Manage your recipient lists:</strong> View, edit, and delete saved recipient lists used in campaigns.</p>
+            </div>
+            
+            <?php if (empty($saved_lists)): ?>
+                <div class="notice notice-warning">
+                    <p>No saved recipient lists found. Create lists when uploading CSV files in campaigns.</p>
+                </div>
+            <?php else: ?>
+                <div class="tablenav top">
+                    <div class="alignleft actions bulkactions">
+                        <p class="search-box">
+                            <label class="screen-reader-text" for="list-search-input">Search Lists:</label>
+                            <input type="search" id="list-search-input" name="s" value="" placeholder="Search lists...">
+                            <input type="submit" id="search-submit" class="button" value="Search Lists">
+                        </p>
+                    </div>
+                </div>
+                
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th scope="col">List Name</th>
+                            <th scope="col">Recipients Count</th>
+                            <th scope="col">Created</th>
+                            <th scope="col">Last Updated</th>
+                            <th scope="col">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($saved_lists as $list): ?>
+                            <tr>
+                                <td><strong><?php echo esc_html($list->list_name); ?></strong></td>
+                                <td><?php echo number_format($list->total_count); ?> recipients</td>
+                                <td><?php echo date('M j, Y g:i A', strtotime($list->created_at)); ?></td>
+                                <td><?php echo date('M j, Y g:i A', strtotime($list->updated_at)); ?></td>
+                                <td>
+                                    <button class="button view-list" data-list-id="<?php echo $list->id; ?>">View</button>
+                                    <button class="button edit-list-name" data-list-id="<?php echo $list->id; ?>" data-current-name="<?php echo esc_attr($list->list_name); ?>">Rename</button>
+                                    <button class="button button-link-delete delete-list" data-list-id="<?php echo $list->id; ?>">Delete</button>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endif; ?>
+        </div>
+        
+        <script>
+        jQuery(document).ready(function($) {
+            // View list functionality will be implemented later
+            $('.view-list').click(function() {
+                var listId = $(this).data('list-id');
+                alert('View functionality coming soon for list ID: ' + listId);
+            });
+            
+            // Rename list
+            $('.edit-list-name').click(function() {
+                var listId = $(this).data('list-id');
+                var currentName = $(this).data('current-name');
+                var newName = prompt('Enter new name for this list:', currentName);
+                
+                if (newName && newName !== currentName) {
+                    // TODO: Implement rename functionality
+                    alert('Rename functionality coming soon');
+                }
+            });
+            
+            // Delete list
+            $('.delete-list').click(function() {
+                var listId = $(this).data('list-id');
+                if (confirm('Are you sure you want to delete this recipients list? This cannot be undone.')) {
+                    // TODO: Implement delete functionality
+                    alert('Delete functionality coming soon');
+                }
+            });
+        });
+        </script>
+        <?php
+    }
+    
+    public function settings_page() {
+        // Process form submission
+        if (isset($_POST['submit'])) {
+            // Verify nonce
+            if (!wp_verify_nonce($_POST['alumni_settings_nonce'], 'alumni_settings')) {
+                wp_die('Security check failed');
+            }
+            
+            // Update settings
+            update_option('alumni_mailgun_api_key', sanitize_text_field($_POST['mailgun_api_key']));
+            update_option('alumni_mailgun_domain', sanitize_text_field($_POST['mailgun_domain']));
+            update_option('alumni_from_email', sanitize_email($_POST['from_email']));
+            update_option('alumni_from_name', sanitize_text_field($_POST['from_name']));
+            
+            echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
+        }
+        
+        // Get current settings
+        $api_key = get_option('alumni_mailgun_api_key', '');
+        $domain = get_option('alumni_mailgun_domain', '');
+        $from_email = get_option('alumni_from_email', '');
+        $from_name = get_option('alumni_from_name', 'Alumni Association');
+        ?>
+        <div class="wrap">
+            <h1>⚙️ Bulk Email Settings</h1>
+            
+            <form method="post" action="">
+                <?php wp_nonce_field('alumni_settings', 'alumni_settings_nonce'); ?>
+                
+                <table class="form-table">
+                    <tr>
+                        <th scope="row">
+                            <label for="mailgun_api_key">Mailgun API Key</label>
+                        </th>
+                        <td>
+                            <input type="password" id="mailgun_api_key" name="mailgun_api_key" 
+                                   value="<?php echo esc_attr($api_key); ?>" class="regular-text" />
+                            <p class="description">Your Mailgun API key from the Mailgun dashboard.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="mailgun_domain">Mailgun Domain</label>
+                        </th>
+                        <td>
+                            <input type="text" id="mailgun_domain" name="mailgun_domain" 
+                                   value="<?php echo esc_attr($domain); ?>" class="regular-text" 
+                                   placeholder="alumni.antiochians.org" />
+                            <p class="description">Your verified domain in Mailgun.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="from_email">From Email</label>
+                        </th>
+                        <td>
+                            <input type="email" id="from_email" name="from_email" 
+                                   value="<?php echo esc_attr($from_email); ?>" class="regular-text"
+                                   placeholder="antiochalumni@alumni.antiochians.org" />
+                            <p class="description">The email address campaigns will be sent from.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="from_name">From Name</label>
+                        </th>
+                        <td>
+                            <input type="text" id="from_name" name="from_name" 
+                                   value="<?php echo esc_attr($from_name); ?>" class="regular-text" />
+                            <p class="description">The name campaigns will be sent from.</p>
+                        </td>
+                    </tr>
+                </table>
+                
+                <p class="submit">
+                    <input type="submit" name="submit" id="submit" class="button-primary" value="Save Changes" />
+                </p>
+            </form>
+            
+            <hr>
+            
+            <h2>🔗 Webhook Configuration</h2>
+            <p>Add this URL to your Mailgun webhook settings for bounce tracking:</p>
+            <code><?php echo admin_url('admin-ajax.php?action=handle_alumni_webhook'); ?></code>
+            
+            <h2>📊 Plugin Information</h2>
+            <p>Repository: <code>https://github.com/<?php echo ALUMNI_BULK_EMAIL_GITHUB_REPO; ?></code></p>
+            <p>Current version: <strong><?php echo ALUMNI_BULK_EMAIL_VERSION; ?></strong></p>
+            <p class="description">Download the latest version manually from GitHub when updates are available.</p>
+        </div>
+        <?php
     }
     
 }
