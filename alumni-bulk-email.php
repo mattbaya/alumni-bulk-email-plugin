@@ -858,6 +858,24 @@ class AlumniBulkEmail {
                         <textarea id="manual_recipients" name="manual_recipients" rows="10" cols="50" placeholder="Enter email addresses, one per line:&#10;john@example.com&#10;Jane Doe &lt;jane@example.com&gt;&#10;bob.smith@example.com"></textarea>
                     </div>
                     
+                    <!-- Preview areas and email column selection -->
+                    <div id="list_preview" style="margin-top: 15px;"></div>
+                    <div id="csv_preview" style="margin-top: 15px;"></div>
+                    
+                    <div id="saved_list_email_column_section" style="display: none; margin-top: 15px;">
+                        <h4>Select Email Column for Saved List:</h4>
+                        <select id="saved_list_email_column" name="email_column">
+                            <option value="">Select email column</option>
+                        </select>
+                    </div>
+                    
+                    <div id="csv_email_column_section" style="display: none; margin-top: 15px;">
+                        <h4>Select Email Column for CSV:</h4>
+                        <select id="csv_email_column" name="email_column_upload">
+                            <option value="">Select email column</option>
+                        </select>
+                    </div>
+                    
                     <div id="recipient_preview" style="display: none; margin-top: 15px;">
                         <!-- Preview content will be loaded here -->
                     </div>
@@ -1019,6 +1037,12 @@ class AlumniBulkEmail {
             // Form interactions
             $('input[name="recipients_source"]').change(function() {
                 $('.recipients-section').hide();
+                // Hide all preview areas and email column sections
+                $('#list_preview').empty();
+                $('#csv_preview').empty();
+                $('#saved_list_email_column_section').hide();
+                $('#csv_email_column_section').hide();
+                
                 if ($(this).val() === 'saved_list') {
                     $('#saved_list_section').show();
                 } else if ($(this).val() === 'upload_csv') {
@@ -1111,6 +1135,145 @@ class AlumniBulkEmail {
                 } else {
                     alert('Please select an HTML file first');
                 }
+            });
+            
+            // Preview saved list
+            $('#preview_saved_list').click(function() {
+                var listId = $('#saved_recipients_list').val();
+                if (!listId) {
+                    alert('Please select a recipient list first');
+                    return;
+                }
+                
+                var button = $(this);
+                button.prop('disabled', true).text('Loading...');
+                
+                $.post(ajaxurl, {
+                    action: 'load_recipient_list',
+                    nonce: '<?php echo wp_create_nonce("load_recipient_list"); ?>',
+                    list_id: listId
+                }).done(function(response) {
+                    if (response.success) {
+                        var data = response.data;
+                        var previewHtml = '<h4>List Preview: ' + data.list_name + ' (' + data.total_count + ' recipients)</h4>';
+                        previewHtml += '<div style="border: 1px solid #ddd; padding: 10px; max-height: 300px; overflow-y: auto;">';
+                        previewHtml += '<strong>Available Columns:</strong> ' + data.columns.join(', ') + '<br><br>';
+                        previewHtml += '<table class="wp-list-table widefat"><tr>';
+                        
+                        // Table headers
+                        for (var col of data.columns) {
+                            previewHtml += '<th>' + col + '</th>';
+                        }
+                        previewHtml += '</tr>';
+                        
+                        // Table rows (first 5)
+                        for (var i = 0; i < Math.min(data.recipients.length, 5); i++) {
+                            previewHtml += '<tr>';
+                            for (var col of data.columns) {
+                                previewHtml += '<td>' + (data.recipients[i][col] || '') + '</td>';
+                            }
+                            previewHtml += '</tr>';
+                        }
+                        
+                        if (data.recipients.length > 5) {
+                            previewHtml += '<tr><td colspan="' + data.columns.length + '"><em>... and ' + (data.total_count - 5) + ' more recipients</em></td></tr>';
+                        }
+                        
+                        previewHtml += '</table></div>';
+                        
+                        // Update email column dropdown
+                        var emailSelect = $('#saved_list_email_column');
+                        emailSelect.empty();
+                        emailSelect.append('<option value="">Select email column</option>');
+                        for (var col of data.columns) {
+                            var selected = (col.toLowerCase().includes('email') || col.toLowerCase() === 'email') ? 'selected' : '';
+                            emailSelect.append('<option value="' + col + '" ' + selected + '>' + col + '</option>');
+                        }
+                        
+                        $('#list_preview').html(previewHtml);
+                        $('#saved_list_email_column_section').show();
+                        
+                    } else {
+                        alert('Error loading list: ' + response.data.message);
+                    }
+                }).fail(function() {
+                    alert('Error loading list');
+                }).always(function() {
+                    button.prop('disabled', false).text('Preview List');
+                });
+            });
+            
+            // Preview CSV file
+            $('#preview_csv').click(function() {
+                var csvFile = document.getElementById('csv_file');
+                if (!csvFile || !csvFile.files.length) {
+                    alert('Please select a CSV/Excel file first');
+                    return;
+                }
+                
+                var button = $(this);
+                button.prop('disabled', true).text('Loading...');
+                
+                var formData = new FormData();
+                formData.append('csv_file', csvFile.files[0]);
+                formData.append('action', 'upload_csv');
+                formData.append('nonce', '<?php echo wp_create_nonce("upload_csv"); ?>');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false
+                }).done(function(response) {
+                    if (response.success) {
+                        var data = response.data;
+                        var previewHtml = '<h4>CSV Preview (' + data.total_count + ' recipients)</h4>';
+                        previewHtml += '<div style="border: 1px solid #ddd; padding: 10px; max-height: 300px; overflow-y: auto;">';
+                        previewHtml += '<strong>Available Columns:</strong> ' + data.columns.join(', ') + '<br><br>';
+                        previewHtml += '<table class="wp-list-table widefat"><tr>';
+                        
+                        // Table headers
+                        for (var col of data.columns) {
+                            previewHtml += '<th>' + col + '</th>';
+                        }
+                        previewHtml += '</tr>';
+                        
+                        // Table rows (first 5)
+                        for (var i = 0; i < Math.min(data.recipients.length, 5); i++) {
+                            previewHtml += '<tr>';
+                            for (var col of data.columns) {
+                                previewHtml += '<td>' + (data.recipients[i][col] || '') + '</td>';
+                            }
+                            previewHtml += '</tr>';
+                        }
+                        
+                        if (data.recipients.length > 5) {
+                            previewHtml += '<tr><td colspan="' + data.columns.length + '"><em>... and ' + (data.total_count - 5) + ' more recipients</em></td></tr>';
+                        }
+                        
+                        previewHtml += '</table></div>';
+                        
+                        // Update email column dropdown
+                        var emailSelect = $('#csv_email_column');
+                        emailSelect.empty();
+                        emailSelect.append('<option value="">Select email column</option>');
+                        for (var col of data.columns) {
+                            var selected = (col.toLowerCase().includes('email') || col.toLowerCase() === 'email') ? 'selected' : '';
+                            emailSelect.append('<option value="' + col + '" ' + selected + '>' + col + '</option>');
+                        }
+                        
+                        $('#csv_preview').html(previewHtml);
+                        $('#csv_email_column_section').show();
+                        
+                    } else {
+                        alert('Error previewing file: ' + response.data.message);
+                    }
+                }).fail(function() {
+                    alert('Error previewing file');
+                }).always(function() {
+                    button.prop('disabled', false).text('Preview & Validate');
+                });
             });
             
             // Save Campaign
