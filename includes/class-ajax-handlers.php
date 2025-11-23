@@ -68,6 +68,7 @@ class Alumni_Ajax_Handlers {
         add_action('wp_ajax_save_typography_preset', array($this, 'handle_save_typography_preset'));
         add_action('wp_ajax_test_mailgun_connection', array($this, 'handle_test_mailgun_connection'));
         add_action('wp_ajax_update_table_schema', array($this, 'handle_update_table_schema'));
+        add_action('wp_ajax_get_campaign_status', array($this, 'handle_get_campaign_status'));
         
         // Utility handlers
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -242,18 +243,35 @@ class Alumni_Ajax_Handlers {
                 $content = $this->header_footer_manager->apply_templates($content, $header_id, $footer_id);
             }
             
-            // Send campaign
-            $result = $this->campaign_manager->send_campaign($recipients, $subject, $content, $campaign_name, $email_column);
+            // Queue campaign for background processing (for large lists)
+            if (count($recipients) > 20) {
+                $result = $this->campaign_manager->queue_campaign($recipients, $subject, $content, $campaign_name, $email_column);
+                
+                echo json_encode(array(
+                    'success' => true,
+                    'data' => array(
+                        'message' => "Campaign queued! Processing {$result['total_recipients']} recipients in the background.",
+                        'campaign_id' => $result['campaign_id'],
+                        'status' => 'queued',
+                        'total_recipients' => $result['total_recipients'],
+                        'redirect_to_status' => true
+                    )
+                ));
+                
+            } else {
+                // Send immediately for small lists
+                $result = $this->campaign_manager->send_campaign($recipients, $subject, $content, $campaign_name, $email_column);
             
-            echo json_encode(array(
-                'success' => true,
-                'data' => array(
-                    'message' => "Campaign sent! {$result['sent']} emails sent, {$result['failed']} failed.",
-                    'sent' => $result['sent'],
-                    'failed' => $result['failed'],
-                    'campaign_id' => $result['campaign_id']
-                )
-            ));
+                echo json_encode(array(
+                    'success' => true,
+                    'data' => array(
+                        'message' => "Campaign sent! {$result['sent']} emails sent, {$result['failed']} failed.",
+                        'sent' => $result['sent'],
+                        'failed' => $result['failed'],
+                        'campaign_id' => $result['campaign_id']
+                    )
+                ));
+            }
             
         } catch (Exception $e) {
             echo json_encode(array(
@@ -1536,6 +1554,44 @@ class Alumni_Ajax_Handlers {
             echo json_encode(array(
                 'success' => false,
                 'data' => array('message' => 'Error updating schema: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Get campaign status and progress
+     */
+    public function handle_get_campaign_status() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'get_campaign_status') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $campaign_id = intval($_POST['campaign_id']);
+            if (!$campaign_id) {
+                throw new Exception('Invalid campaign ID');
+            }
+            
+            $progress = $this->campaign_manager->get_campaign_progress($campaign_id);
+            
+            if (!$progress) {
+                throw new Exception('Campaign not found');
+            }
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => $progress
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
             ));
         }
         

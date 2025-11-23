@@ -249,6 +249,26 @@ class Alumni_Database {
             $missing_columns_added[] = 'updated_at';
         }
         
+        if (!in_array('email_column', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN email_column varchar(255) DEFAULT 'email'");
+            $missing_columns_added[] = 'email_column';
+        }
+        
+        if (!in_array('batch_size', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN batch_size int DEFAULT 50");
+            $missing_columns_added[] = 'batch_size';
+        }
+        
+        if (!in_array('processed_count', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN processed_count int DEFAULT 0");
+            $missing_columns_added[] = 'processed_count';
+        }
+        
+        if (!in_array('batch_current', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN batch_current int DEFAULT 0");
+            $missing_columns_added[] = 'batch_current';
+        }
+        
         if (!empty($missing_columns_added)) {
             error_log('Alumni Bulk Email - Added missing columns to campaigns table: ' . implode(', ', $missing_columns_added));
         } else {

@@ -216,7 +216,41 @@ class Alumni_Campaign_Manager {
     }
     
     /**
-     * Send campaign to recipients
+     * Queue campaign for background processing
+     */
+    public function queue_campaign($recipients, $subject, $content, $campaign_name, $email_column = 'email') {
+        // Create campaign record
+        $campaign_id = $this->create_campaign($campaign_name, $subject, $content, count($recipients), $recipients);
+        
+        // Store additional campaign metadata
+        global $wpdb;
+        $table = Alumni_Database::get_table_name('email_campaigns');
+        $wpdb->update(
+            $table,
+            array(
+                'status' => 'queued',
+                'email_column' => $email_column,
+                'batch_size' => 50, // Process 50 emails at a time
+                'processed_count' => 0,
+                'batch_current' => 0
+            ),
+            array('id' => $campaign_id),
+            array('%s', '%s', '%d', '%d', '%d'),
+            array('%d')
+        );
+        
+        // Schedule first batch for immediate processing
+        wp_schedule_single_event(time() + 10, 'alumni_process_campaign_batch', array($campaign_id));
+        
+        return array(
+            'campaign_id' => $campaign_id,
+            'status' => 'queued',
+            'total_recipients' => count($recipients)
+        );
+    }
+    
+    /**
+     * Send campaign to recipients (legacy synchronous method)
      */
     public function send_campaign($recipients, $subject, $content, $campaign_name, $email_column = 'email') {
         // Create campaign record
@@ -244,6 +278,177 @@ class Alumni_Campaign_Manager {
             $this->update_campaign_status($campaign_id, 'failed');
             throw $e;
         }
+    }
+    
+    /**
+     * Process a batch of campaign emails
+     */
+    public function process_campaign_batch($campaign_id) {
+        global $wpdb;
+        $table = Alumni_Database::get_table_name('email_campaigns');
+        
+        // Get campaign details
+        $campaign = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM $table WHERE id = %d",
+            $campaign_id
+        ));
+        
+        if (!$campaign || $campaign->status === 'completed') {
+            return false;
+        }
+        
+        // Parse recipients data
+        $all_recipients = json_decode($campaign->recipients_data, true);
+        if (!$all_recipients) {
+            $this->update_campaign_status($campaign_id, 'failed');
+            return false;
+        }
+        
+        // Calculate batch range
+        $batch_size = $campaign->batch_size ?: 50;
+        $start_index = $campaign->processed_count;
+        $end_index = min($start_index + $batch_size, count($all_recipients));
+        $batch_recipients = array_slice($all_recipients, $start_index, $batch_size);
+        
+        if (empty($batch_recipients)) {
+            // No more recipients to process
+            $this->update_campaign_status($campaign_id, 'completed', current_time('mysql'));
+            return true;
+        }
+        
+        // Mark as processing if not already
+        if ($campaign->status === 'queued') {
+            $this->update_campaign_status($campaign_id, 'sending');
+        }
+        
+        $sent_count = 0;
+        $failed_count = 0;
+        $errors = array();
+        
+        // Process this batch
+        foreach ($batch_recipients as $recipient) {
+            try {
+                // Extract email address using specified column
+                $email_column = $campaign->email_column ?: 'email';
+                $email = isset($recipient[$email_column]) ? trim($recipient[$email_column]) : '';
+                
+                if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    $failed_count++;
+                    continue;
+                }
+                
+                // Check if email is unsubscribed or bounced
+                if ($this->email_service->is_email_unsubscribed($email) || 
+                    $this->email_service->is_email_bounced($email)) {
+                    $failed_count++;
+                    continue;
+                }
+                
+                // Personalize content
+                $personalized_subject = $this->email_service->personalize_content($campaign->subject, $recipient);
+                $personalized_content = $this->email_service->personalize_content($campaign->content, $recipient);
+                
+                // Add unsubscribe link
+                $personalized_content = $this->email_service->add_unsubscribe_link($personalized_content, $email);
+                
+                // Send email
+                $result = $this->email_service->send_email($email, $personalized_subject, $personalized_content);
+                
+                // Log success
+                $this->email_service->log_email_attempt($campaign_id, $recipient, 'sent', $result);
+                $sent_count++;
+                
+                // Small delay to avoid overwhelming Mailgun
+                usleep(200000); // 0.2 seconds = ~5 emails per second
+                
+            } catch (Exception $e) {
+                $failed_count++;
+                $errors[] = "Failed to send to {$email}: " . $e->getMessage();
+                error_log("Alumni Bulk Email Batch - " . end($errors));
+                
+                // Log failure
+                $this->email_service->log_email_attempt($campaign_id, $recipient, 'failed', array('error' => $e->getMessage()));
+            }
+        }
+        
+        // Update campaign progress
+        $new_processed_count = $start_index + count($batch_recipients);
+        $wpdb->update(
+            $table,
+            array(
+                'processed_count' => $new_processed_count,
+                'batch_current' => $campaign->batch_current + 1,
+                'updated_at' => current_time('mysql')
+            ),
+            array('id' => $campaign_id),
+            array('%d', '%d', '%s'),
+            array('%d')
+        );
+        
+        // Schedule next batch if there are more recipients
+        if ($new_processed_count < $campaign->total_recipients) {
+            wp_schedule_single_event(time() + 30, 'alumni_process_campaign_batch', array($campaign_id));
+        } else {
+            // Campaign completed
+            $this->update_campaign_status($campaign_id, 'completed', current_time('mysql'));
+        }
+        
+        return array(
+            'batch_sent' => $sent_count,
+            'batch_failed' => $failed_count,
+            'total_processed' => $new_processed_count,
+            'total_recipients' => $campaign->total_recipients,
+            'errors' => $errors
+        );
+    }
+    
+    /**
+     * Get campaign progress
+     */
+    public function get_campaign_progress($campaign_id) {
+        global $wpdb;
+        $table = Alumni_Database::get_table_name('email_campaigns');
+        
+        $campaign = $wpdb->get_row($wpdb->prepare(
+            "SELECT id, campaign_name, status, processed_count, total_recipients, 
+                    batch_current, batch_size, created_at, updated_at
+             FROM $table WHERE id = %d",
+            $campaign_id
+        ));
+        
+        if (!$campaign) {
+            return false;
+        }
+        
+        // Get send statistics from logs
+        $logs_table = Alumni_Database::get_table_name('email_logs');
+        $stats = $wpdb->get_row($wpdb->prepare("
+            SELECT 
+                COUNT(*) as total_attempts,
+                SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count
+            FROM $logs_table 
+            WHERE campaign_id = %d
+        ", $campaign_id), ARRAY_A);
+        
+        $progress_percentage = $campaign->total_recipients > 0 
+            ? round(($campaign->processed_count / $campaign->total_recipients) * 100, 1)
+            : 0;
+        
+        return array(
+            'campaign_id' => $campaign->id,
+            'campaign_name' => $campaign->campaign_name,
+            'status' => $campaign->status,
+            'processed_count' => $campaign->processed_count,
+            'total_recipients' => $campaign->total_recipients,
+            'progress_percentage' => $progress_percentage,
+            'batch_current' => $campaign->batch_current,
+            'batch_size' => $campaign->batch_size,
+            'sent_count' => $stats['sent_count'] ?: 0,
+            'failed_count' => $stats['failed_count'] ?: 0,
+            'created_at' => $campaign->created_at,
+            'updated_at' => $campaign->updated_at
+        );
     }
     
     /**

@@ -253,7 +253,7 @@ class Alumni_Email_Service {
     /**
      * Add unsubscribe link to email content
      */
-    private function add_unsubscribe_link($content, $email) {
+    public function add_unsubscribe_link($content, $email) {
         $token = $this->generate_unsubscribe_token($email);
         $unsubscribe_url = admin_url('admin-ajax.php?action=handle_unsubscribe&token=' . $token);
         

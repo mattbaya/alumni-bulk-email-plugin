@@ -104,6 +104,15 @@ class AlumniBulkEmail {
         
         add_submenu_page(
             'alumni-bulk-email',
+            'Campaign Status',
+            'Campaign Status',
+            'edit_posts',
+            'alumni-campaign-status',
+            array($this, 'campaign_status_page')
+        );
+        
+        add_submenu_page(
+            'alumni-bulk-email',
             'Email Logs',
             'Email Logs',
             'edit_posts',
@@ -751,6 +760,276 @@ class AlumniBulkEmail {
         <?php
         
         echo '</div>';
+    }
+    
+    /**
+     * Campaign Status page
+     */
+    public function campaign_status_page() {
+        echo '<div class="wrap">';
+        echo '<h1>Campaign Status</h1>';
+        
+        // Get campaign ID from URL parameter
+        $campaign_id = isset($_GET['campaign_id']) ? intval($_GET['campaign_id']) : 0;
+        
+        if ($campaign_id) {
+            $this->render_campaign_status_view($campaign_id);
+        } else {
+            $this->render_active_campaigns_list();
+        }
+        
+        echo '</div>';
+    }
+    
+    /**
+     * Render active campaigns list
+     */
+    private function render_active_campaigns_list() {
+        $file_processor = new Alumni_File_Processor();
+        $email_service = new Alumni_Email_Service($file_processor);
+        $list_manager = new Alumni_List_Manager();
+        $campaign_manager = new Alumni_Campaign_Manager($email_service, $list_manager);
+        
+        global $wpdb;
+        $campaigns_table = Alumni_Database::get_table_name('email_campaigns');
+        
+        // Get active/queued campaigns
+        $active_campaigns = $wpdb->get_results("
+            SELECT id, campaign_name, status, processed_count, total_recipients, created_at, updated_at
+            FROM $campaigns_table 
+            WHERE status IN ('queued', 'sending', 'processing')
+            ORDER BY created_at DESC
+        ");
+        
+        // Get recently completed campaigns
+        $recent_campaigns = $wpdb->get_results("
+            SELECT id, campaign_name, status, processed_count, total_recipients, created_at, updated_at
+            FROM $campaigns_table 
+            WHERE status IN ('completed', 'failed') AND updated_at > DATE_SUB(NOW(), INTERVAL 1 DAY)
+            ORDER BY updated_at DESC
+            LIMIT 10
+        ");
+        
+        ?>
+        <div class="postbox">
+            <h2 class="hndle">Active Campaigns</h2>
+            <div class="inside">
+                <?php if (empty($active_campaigns)): ?>
+                    <p>No active campaigns found.</p>
+                <?php else: ?>
+                    <table class="wp-list-table widefat fixed striped">
+                        <thead>
+                            <tr>
+                                <th>Campaign Name</th>
+                                <th>Status</th>
+                                <th>Progress</th>
+                                <th>Started</th>
+                                <th>Last Updated</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($active_campaigns as $campaign): 
+                                $progress = $campaign->total_recipients > 0 
+                                    ? round(($campaign->processed_count / $campaign->total_recipients) * 100, 1) 
+                                    : 0;
+                            ?>
+                                <tr>
+                                    <td><strong><?php echo esc_html($campaign->campaign_name); ?></strong></td>
+                                    <td>
+                                        <span class="status-badge status-<?php echo esc_attr($campaign->status); ?>">
+                                            <?php echo ucfirst($campaign->status); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="progress-bar">
+                                            <div class="progress-fill" style="width: <?php echo $progress; ?>%"></div>
+                                        </div>
+                                        <?php echo $campaign->processed_count; ?>/<?php echo $campaign->total_recipients; ?> (<?php echo $progress; ?>%)
+                                    </td>
+                                    <td><?php echo date('M j, Y g:i A', strtotime($campaign->created_at)); ?></td>
+                                    <td><?php echo date('M j, Y g:i A', strtotime($campaign->updated_at)); ?></td>
+                                    <td>
+                                        <a href="?page=alumni-campaign-status&campaign_id=<?php echo $campaign->id; ?>" class="button button-primary">View Details</a>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
+        </div>
+        
+        <?php if (!empty($recent_campaigns)): ?>
+        <div class="postbox">
+            <h2 class="hndle">Recent Campaigns (Last 24 Hours)</h2>
+            <div class="inside">
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th>Campaign Name</th>
+                            <th>Status</th>
+                            <th>Recipients</th>
+                            <th>Completed</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($recent_campaigns as $campaign): ?>
+                            <tr>
+                                <td><strong><?php echo esc_html($campaign->campaign_name); ?></strong></td>
+                                <td>
+                                    <span class="status-badge status-<?php echo esc_attr($campaign->status); ?>">
+                                        <?php echo ucfirst($campaign->status); ?>
+                                    </span>
+                                </td>
+                                <td><?php echo $campaign->total_recipients; ?></td>
+                                <td><?php echo date('M j, Y g:i A', strtotime($campaign->updated_at)); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php endif; ?>
+        
+        <style>
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .status-queued { background: #ffb900; color: #fff; }
+        .status-sending { background: #0073aa; color: #fff; }
+        .status-processing { background: #0073aa; color: #fff; }
+        .status-completed { background: #46b450; color: #fff; }
+        .status-failed { background: #dc3232; color: #fff; }
+        
+        .progress-bar {
+            width: 150px;
+            height: 20px;
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            display: inline-block;
+            margin-right: 10px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #0073aa;
+            transition: width 0.3s ease;
+        }
+        </style>
+        <?php
+    }
+    
+    /**
+     * Render individual campaign status view
+     */
+    private function render_campaign_status_view($campaign_id) {
+        ?>
+        <div id="campaign-status-container" data-campaign-id="<?php echo $campaign_id; ?>">
+            <p><a href="?page=alumni-campaign-status">&larr; Back to Campaign List</a></p>
+            
+            <div id="campaign-details">
+                <div class="notice notice-info">
+                    <p>Loading campaign details...</p>
+                </div>
+            </div>
+            
+            <div class="postbox">
+                <h2 class="hndle">Real-time Progress</h2>
+                <div class="inside">
+                    <div id="progress-container">
+                        <div id="progress-bar" class="progress-bar" style="width: 300px;">
+                            <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+                        </div>
+                        <div id="progress-text">Initializing...</div>
+                    </div>
+                    
+                    <div id="status-details" style="margin-top: 20px;">
+                        <!-- Status details will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script type="text/javascript">
+        jQuery(document).ready(function($) {
+            var campaignId = $('#campaign-status-container').data('campaign-id');
+            var statusInterval;
+            
+            function updateCampaignStatus() {
+                $.post(ajaxurl, {
+                    action: 'get_campaign_status',
+                    nonce: '<?php echo wp_create_nonce("get_campaign_status"); ?>',
+                    campaign_id: campaignId
+                }).done(function(response) {
+                    if (response.success) {
+                        var data = response.data;
+                        
+                        // Update progress bar
+                        $('#progress-fill').css('width', data.progress_percentage + '%');
+                        $('#progress-text').text(data.processed_count + '/' + data.total_recipients + ' (' + data.progress_percentage + '%)');
+                        
+                        // Update campaign details
+                        var statusClass = 'notice-info';
+                        if (data.status === 'completed') statusClass = 'notice-success';
+                        if (data.status === 'failed') statusClass = 'notice-error';
+                        
+                        $('#campaign-details').html(
+                            '<div class="notice ' + statusClass + '"><p>' +
+                            '<strong>' + data.campaign_name + '</strong><br>' +
+                            'Status: <span class="status-' + data.status + '">' + data.status.charAt(0).toUpperCase() + data.status.slice(1) + '</span><br>' +
+                            'Progress: ' + data.processed_count + '/' + data.total_recipients + ' recipients (' + data.progress_percentage + '%)<br>' +
+                            'Sent: ' + data.sent_count + ' | Failed: ' + data.failed_count + '<br>' +
+                            'Batch: ' + data.batch_current + ' (Size: ' + data.batch_size + ')<br>' +
+                            'Started: ' + new Date(data.created_at).toLocaleString() + '<br>' +
+                            'Last Updated: ' + new Date(data.updated_at).toLocaleString() +
+                            '</p></div>'
+                        );
+                        
+                        // Update status details
+                        var estimatedRemaining = '';
+                        if (data.status === 'sending' && data.progress_percentage > 0) {
+                            var elapsedMs = new Date(data.updated_at) - new Date(data.created_at);
+                            var totalEstimatedMs = elapsedMs / (data.progress_percentage / 100);
+                            var remainingMs = totalEstimatedMs - elapsedMs;
+                            var remainingMinutes = Math.round(remainingMs / 60000);
+                            estimatedRemaining = '<br>Estimated time remaining: ' + remainingMinutes + ' minutes';
+                        }
+                        
+                        $('#status-details').html(
+                            '<h3>Current Status: ' + data.status.charAt(0).toUpperCase() + data.status.slice(1) + '</h3>' +
+                            '<p>Batch processing in progress. Each batch contains up to ' + data.batch_size + ' recipients.</p>' +
+                            '<p>Current batch: ' + data.batch_current + estimatedRemaining + '</p>'
+                        );
+                        
+                        // Stop polling if completed or failed
+                        if (data.status === 'completed' || data.status === 'failed') {
+                            clearInterval(statusInterval);
+                            $('#status-details').append('<p><strong>Campaign processing complete!</strong></p>');
+                        }
+                        
+                    } else {
+                        $('#campaign-details').html('<div class="notice notice-error"><p>Error: ' + response.data.message + '</p></div>');
+                        clearInterval(statusInterval);
+                    }
+                }).fail(function() {
+                    $('#campaign-details').html('<div class="notice notice-error"><p>Failed to fetch campaign status</p></div>');
+                    clearInterval(statusInterval);
+                });
+            }
+            
+            // Initial load
+            updateCampaignStatus();
+            
+            // Poll every 5 seconds
+            statusInterval = setInterval(updateCampaignStatus, 5000);
+        });
+        </script>
+        <?php
     }
     
     /**
@@ -1960,6 +2239,20 @@ class AlumniBulkEmail {
 
 // Initialize plugin
 new AlumniBulkEmail();
+
+// Register cron hook for batch processing
+add_action('alumni_process_campaign_batch', function($campaign_id) {
+    $file_processor = new Alumni_File_Processor();
+    $email_service = new Alumni_Email_Service($file_processor);
+    $list_manager = new Alumni_List_Manager();
+    $campaign_manager = new Alumni_Campaign_Manager($email_service, $list_manager);
+    
+    $result = $campaign_manager->process_campaign_batch($campaign_id);
+    
+    if ($result) {
+        error_log("Alumni Bulk Email - Processed batch for campaign {$campaign_id}: {$result['batch_sent']} sent, {$result['batch_failed']} failed, {$result['total_processed']}/{$result['total_recipients']} total");
+    }
+});
 
 // Activation and deactivation hooks
 register_activation_hook(__FILE__, function() {
