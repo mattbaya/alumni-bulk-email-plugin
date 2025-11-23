@@ -44,6 +44,12 @@ class Alumni_Email_Service {
             $from_name = get_option('alumni_bulk_email_from_name', 'Alumni Association');
         }
         
+        // Debug logging for troubleshooting
+        error_log('Alumni Bulk Email - Sending email to: ' . $to);
+        error_log('Alumni Bulk Email - Mailgun domain: ' . (!empty($domain) ? $domain : 'EMPTY'));
+        error_log('Alumni Bulk Email - API key: ' . (!empty($api_key) ? 'SET (' . strlen($api_key) . ' chars)' : 'EMPTY'));
+        error_log('Alumni Bulk Email - From email: ' . (!empty($from_email) ? $from_email : 'EMPTY'));
+        
         $url = "https://api.mailgun.net/v3/{$domain}/messages";
         
         $data = array(
@@ -80,10 +86,27 @@ class Alumni_Email_Service {
         if ($response_code !== 200) {
             $error_data = json_decode($response_body, true);
             $error_message = isset($error_data['message']) ? $error_data['message'] : 'Unknown error';
-            throw new Exception('Mailgun API error: ' . $error_message);
+            
+            // Enhanced error logging
+            error_log('Alumni Bulk Email - Mailgun API Error:');
+            error_log('  Response Code: ' . $response_code);
+            error_log('  Response Body: ' . $response_body);
+            error_log('  Parsed Error: ' . $error_message);
+            error_log('  Request URL: ' . $url);
+            
+            // Include response code in error message for better debugging
+            throw new Exception('Mailgun API error (HTTP ' . $response_code . '): ' . $error_message);
         }
         
         $result = json_decode($response_body, true);
+        
+        // Log successful sends
+        if (isset($result['id'])) {
+            error_log('Alumni Bulk Email - Email sent successfully. Message ID: ' . $result['id']);
+        } else {
+            error_log('Alumni Bulk Email - Email sent but no message ID returned. Response: ' . $response_body);
+        }
+        
         return $result;
     }
     

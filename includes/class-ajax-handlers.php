@@ -66,6 +66,7 @@ class Alumni_Ajax_Handlers {
         add_action('wp_ajax_set_default_header_footer', array($this, 'handle_set_default_header_footer'));
         add_action('wp_ajax_duplicate_template', array($this, 'handle_duplicate_template'));
         add_action('wp_ajax_save_typography_preset', array($this, 'handle_save_typography_preset'));
+        add_action('wp_ajax_test_mailgun_connection', array($this, 'handle_test_mailgun_connection'));
         
         // Utility handlers
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -1454,6 +1455,52 @@ class Alumni_Ajax_Handlers {
             echo json_encode(array(
                 'success' => false,
                 'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Test Mailgun connection
+     */
+    public function handle_test_mailgun_connection() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'test_mailgun_connection') || !current_user_can('manage_options')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $test_email = sanitize_email($_POST['test_email']);
+            
+            if (!$test_email) {
+                throw new Exception('Valid test email address is required');
+            }
+            
+            // Test email content
+            $subject = 'Alumni Bulk Email - Mailgun Connection Test';
+            $content = '<h2>Mailgun Connection Test</h2>
+                       <p>This is a test email to verify that your Mailgun configuration is working correctly.</p>
+                       <p><strong>Sent at:</strong> ' . current_time('F j, Y g:i A') . '</p>
+                       <p>If you received this email, your Mailgun settings are properly configured!</p>';
+            
+            // Use the email service to send the test
+            $result = $this->email_service->send_email($test_email, $subject, $content);
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => 'Test email sent successfully! Check your inbox at ' . $test_email,
+                    'mailgun_message_id' => isset($result['id']) ? $result['id'] : 'Unknown'
+                )
+            ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Mailgun test failed: ' . $e->getMessage())
             ));
         }
         

@@ -1567,6 +1567,23 @@ class AlumniBulkEmail {
         </form>
         
         <div class="postbox">
+            <h2 class="hndle">Mailgun Connection Test</h2>
+            <div class="inside">
+                <p>Test your Mailgun configuration by sending a test email to yourself:</p>
+                <table class="form-table">
+                    <tr>
+                        <th><label for="test_mailgun_email">Test Email Address</label></th>
+                        <td>
+                            <input type="email" id="test_mailgun_email" placeholder="your.email@example.com" class="regular-text" />
+                            <button type="button" id="test_mailgun_connection" class="button">Test Mailgun Connection</button>
+                        </td>
+                    </tr>
+                </table>
+                <div id="mailgun_test_result" style="margin-top: 10px;"></div>
+            </div>
+        </div>
+        
+        <div class="postbox">
             <h2 class="hndle">Settings Verification</h2>
             <div class="inside">
                 <p>Current settings status:</p>
@@ -1603,6 +1620,34 @@ class AlumniBulkEmail {
         
         <script type="text/javascript">
         jQuery(document).ready(function($) {
+            $('#test_mailgun_connection').click(function() {
+                var testEmail = $('#test_mailgun_email').val();
+                if (!testEmail) {
+                    alert('Please enter an email address for testing');
+                    return;
+                }
+                
+                var button = $(this);
+                button.prop('disabled', true).text('Testing...');
+                
+                $.post(ajaxurl, {
+                    action: 'test_mailgun_connection',
+                    nonce: '<?php echo wp_create_nonce('test_mailgun_connection'); ?>',
+                    test_email: testEmail
+                }).done(function(response) {
+                    $('#mailgun_test_result').html(
+                        '<div class="notice notice-' + (response.success ? 'success' : 'error') + '"><p>' +
+                        response.data.message + '</p></div>'
+                    );
+                }).fail(function() {
+                    $('#mailgun_test_result').html(
+                        '<div class="notice notice-error"><p>Failed to test Mailgun connection</p></div>'
+                    );
+                }).always(function() {
+                    button.prop('disabled', false).text('Test Mailgun Connection');
+                });
+            });
+            
             $('#recreate-tables').click(function() {
                 if (!confirm('Are you sure you want to recreate the database tables?')) {
                     return;
