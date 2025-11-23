@@ -1479,6 +1479,12 @@ class Alumni_Ajax_Handlers {
                 throw new Exception('Valid test email address is required');
             }
             
+            // Validate Mailgun configuration first
+            $config_errors = $this->email_service->validate_mailgun_config();
+            if (!empty($config_errors)) {
+                throw new Exception('Mailgun configuration errors: ' . implode(', ', $config_errors));
+            }
+            
             // Test email content
             $subject = 'Alumni Bulk Email - Mailgun Connection Test';
             $content = '<h2>Mailgun Connection Test</h2>

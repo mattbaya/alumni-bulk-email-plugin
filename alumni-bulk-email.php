@@ -1533,14 +1533,21 @@ class AlumniBulkEmail {
                             <th><label for="mailgun_api_key">Mailgun API Key</label></th>
                             <td>
                                 <input type="password" id="mailgun_api_key" name="mailgun_api_key" value="<?php echo esc_attr($mailgun_api_key); ?>" class="regular-text" />
-                                <p class="description">Your Mailgun private API key (starts with "key-")</p>
+                                <p class="description">
+                                    Your Mailgun <strong>Private API key</strong> (starts with "key-")<br>
+                                    <small>Find this in Mailgun Dashboard → Settings → API Keys → Private API key</small>
+                                </p>
                             </td>
                         </tr>
                         <tr>
                             <th><label for="mailgun_domain">Mailgun Domain</label></th>
                             <td>
                                 <input type="text" id="mailgun_domain" name="mailgun_domain" value="<?php echo esc_attr($mailgun_domain); ?>" class="regular-text" />
-                                <p class="description">Your verified Mailgun domain (e.g., mail.yourdomain.com)</p>
+                                <p class="description">
+                                    Your verified Mailgun domain (e.g., mail.yourdomain.com)<br>
+                                    <small><strong>Important:</strong> Do not include http:// or https:// - just the domain name<br>
+                                    Domain must be verified in your Mailgun account</small>
+                                </p>
                             </td>
                         </tr>
                         <tr>

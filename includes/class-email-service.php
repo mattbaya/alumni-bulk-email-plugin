@@ -29,6 +29,37 @@ class Alumni_Email_Service {
     }
     
     /**
+     * Validate Mailgun configuration
+     */
+    public function validate_mailgun_config() {
+        $api_key = get_option('alumni_bulk_email_mailgun_api_key');
+        $domain = get_option('alumni_bulk_email_mailgun_domain');
+        $from_email = get_option('alumni_bulk_email_from_email');
+        
+        $errors = array();
+        
+        if (empty($api_key)) {
+            $errors[] = 'Mailgun API key is missing';
+        } elseif (!preg_match('/^key-[a-zA-Z0-9]{32}$/', $api_key)) {
+            $errors[] = 'Mailgun API key format is invalid (should start with "key-" followed by 32 characters)';
+        }
+        
+        if (empty($domain)) {
+            $errors[] = 'Mailgun domain is missing';
+        } elseif (strpos($domain, 'http') !== false) {
+            $errors[] = 'Mailgun domain should not include http:// or https://';
+        }
+        
+        if (empty($from_email)) {
+            $errors[] = 'From email address is missing';
+        } elseif (!filter_var($from_email, FILTER_VALIDATE_EMAIL)) {
+            $errors[] = 'From email address is invalid';
+        }
+        
+        return $errors;
+    }
+    
+    /**
      * Send a single email via Mailgun
      */
     public function send_email($to, $subject, $content, $from_name = null, $attachments = null) {
@@ -94,8 +125,18 @@ class Alumni_Email_Service {
             error_log('  Parsed Error: ' . $error_message);
             error_log('  Request URL: ' . $url);
             
-            // Include response code in error message for better debugging
-            throw new Exception('Mailgun API error (HTTP ' . $response_code . '): ' . $error_message);
+            // Provide specific guidance for common errors
+            $helpful_message = $error_message;
+            if ($response_code === 401) {
+                $helpful_message = 'Authentication failed. Check your Mailgun API key and make sure it starts with "key-"';
+            } elseif ($response_code === 404) {
+                $helpful_message = 'Domain not found. Verify your Mailgun domain name (without http://)';
+            } elseif ($response_code === 403) {
+                $helpful_message = 'Access forbidden. Your domain may not be verified in Mailgun';
+            }
+            
+            // Include response code and helpful message
+            throw new Exception('Mailgun API error (HTTP ' . $response_code . '): ' . $helpful_message);
         }
         
         $result = json_decode($response_body, true);
