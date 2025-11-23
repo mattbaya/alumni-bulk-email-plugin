@@ -788,6 +788,11 @@ class AlumniBulkEmail {
         $typography_preset_manager = new Alumni_Typography_Preset_Manager();
         $typography_presets = $typography_preset_manager->get_all_presets();
         
+        // Get campaign manager for loading saved campaigns
+        $file_processor = new Alumni_File_Processor();
+        $email_service = new Alumni_Email_Service($file_processor);
+        $campaign_manager = new Alumni_Campaign_Manager($email_service, $list_manager);
+        
         ?>
         <form id="bulk-email-form" enctype="multipart/form-data">
             <?php wp_nonce_field('send_bulk_email', 'nonce'); ?>
@@ -974,7 +979,7 @@ class AlumniBulkEmail {
                     <p>
                         <strong>Load Saved Campaign:</strong><br>
                         <?php
-                        $all_campaigns = $this->campaign_manager->get_all_campaigns();
+                        $all_campaigns = $campaign_manager->get_all_campaigns();
                         $saved_campaigns = array_filter($all_campaigns, function($campaign) {
                             return $campaign->status === 'draft';
                         });
