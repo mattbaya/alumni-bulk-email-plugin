@@ -95,8 +95,8 @@ class AlumniBulkEmail {
         
         add_submenu_page(
             'alumni-bulk-email',
-            'Campaign History',
-            'Campaign History',
+            'Campaign Management',
+            'Campaign Management',
             'edit_posts',
             'alumni-campaign-history',
             array($this, 'campaign_history_page')
@@ -181,13 +181,42 @@ class AlumniBulkEmail {
      */
     public function campaign_history_page() {
         echo '<div class="wrap">';
-        echo '<h1>Campaign History</h1>';
+        echo '<h1>Campaign Management</h1>';
         
-        // Load and display campaigns
-        $campaign_manager = new Alumni_Campaign_Manager();
-        $campaigns = $campaign_manager->get_all_campaigns();
+        // Handle campaign actions
+        if (isset($_GET['action']) && $_GET['action'] === 'review' && isset($_GET['campaign_id'])) {
+            $campaign_id = intval($_GET['campaign_id']);
+            $this->render_campaign_review_page($campaign_id);
+            echo '</div>';
+            return;
+        }
         
-        $this->render_campaigns_table($campaigns);
+        // Load campaigns
+        $file_processor = new Alumni_File_Processor();
+        $email_service = new Alumni_Email_Service($file_processor);
+        $list_manager = new Alumni_List_Manager();
+        $campaign_manager = new Alumni_Campaign_Manager($email_service, $list_manager);
+        
+        // Separate campaigns by status
+        global $wpdb;
+        $campaigns_table = Alumni_Database::get_table_name('email_campaigns');
+        
+        $draft_campaigns = $wpdb->get_results("
+            SELECT * FROM $campaigns_table 
+            WHERE status = 'draft' 
+            ORDER BY created_at DESC
+        ");
+        
+        $sent_campaigns = $wpdb->get_results("
+            SELECT * FROM $campaigns_table 
+            WHERE status IN ('completed', 'failed', 'queued', 'sending') 
+            ORDER BY updated_at DESC
+            LIMIT 20
+        ");
+        
+        // Render sections
+        $this->render_draft_campaigns_section($draft_campaigns);
+        $this->render_sent_campaigns_section($sent_campaigns);
         
         echo '</div>';
     }
@@ -1033,6 +1062,279 @@ class AlumniBulkEmail {
     }
     
     /**
+     * Render draft campaigns section
+     */
+    private function render_draft_campaigns_section($draft_campaigns) {
+        ?>
+        <div class="postbox">
+            <h2 class="hndle">Draft Campaigns</h2>
+            <div class="inside">
+                <?php if (empty($draft_campaigns)): ?>
+                    <p>No draft campaigns found. <a href="admin.php?page=alumni-bulk-email">Create a new campaign</a> to get started.</p>
+                <?php else: ?>
+                    <table class="wp-list-table widefat fixed striped">
+                        <thead>
+                            <tr>
+                                <th>Campaign Name</th>
+                                <th>Subject</th>
+                                <th>Recipients</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($draft_campaigns as $campaign): ?>
+                                <tr>
+                                    <td><strong><?php echo esc_html($campaign->campaign_name); ?></strong></td>
+                                    <td><?php echo esc_html($campaign->subject); ?></td>
+                                    <td><?php echo number_format($campaign->total_recipients); ?></td>
+                                    <td><?php echo date('M j, Y g:i A', strtotime($campaign->created_at)); ?></td>
+                                    <td>
+                                        <a href="?page=alumni-campaign-history&action=review&campaign_id=<?php echo $campaign->id; ?>" 
+                                           class="button button-primary">Review & Send</a>
+                                        <a href="?page=alumni-bulk-email&edit_campaign=<?php echo $campaign->id; ?>" 
+                                           class="button">Edit</a>
+                                        <button class="button button-link-delete delete-draft-campaign" 
+                                                data-campaign-id="<?php echo $campaign->id; ?>">Delete</button>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php
+    }
+    
+    /**
+     * Render sent campaigns section
+     */
+    private function render_sent_campaigns_section($sent_campaigns) {
+        ?>
+        <div class="postbox">
+            <h2 class="hndle">Sent Campaigns (Recent 20)</h2>
+            <div class="inside">
+                <?php if (empty($sent_campaigns)): ?>
+                    <p>No sent campaigns found.</p>
+                <?php else: ?>
+                    <table class="wp-list-table widefat fixed striped">
+                        <thead>
+                            <tr>
+                                <th>Campaign Name</th>
+                                <th>Subject</th>
+                                <th>Recipients</th>
+                                <th>Status</th>
+                                <th>Sent</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($sent_campaigns as $campaign): ?>
+                                <tr>
+                                    <td><strong><?php echo esc_html($campaign->campaign_name); ?></strong></td>
+                                    <td><?php echo esc_html($campaign->subject); ?></td>
+                                    <td><?php echo number_format($campaign->total_recipients); ?></td>
+                                    <td>
+                                        <span class="status-badge status-<?php echo esc_attr($campaign->status); ?>">
+                                            <?php echo ucfirst($campaign->status); ?>
+                                        </span>
+                                    </td>
+                                    <td><?php echo $campaign->sent_at ? date('M j, Y g:i A', strtotime($campaign->sent_at)) : '-'; ?></td>
+                                    <td>
+                                        <button class="button view-campaign" data-campaign-id="<?php echo $campaign->id; ?>">View</button>
+                                        <?php if (in_array($campaign->status, ['queued', 'sending'])): ?>
+                                            <a href="?page=alumni-campaign-status&campaign_id=<?php echo $campaign->id; ?>" 
+                                               class="button button-primary">View Status</a>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php
+    }
+    
+    /**
+     * Render campaign review page
+     */
+    private function render_campaign_review_page($campaign_id) {
+        // Get campaign details
+        global $wpdb;
+        $campaigns_table = Alumni_Database::get_table_name('email_campaigns');
+        $campaign = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM $campaigns_table WHERE id = %d",
+            $campaign_id
+        ));
+        
+        if (!$campaign) {
+            echo '<div class="notice notice-error"><p>Campaign not found.</p></div>';
+            return;
+        }
+        
+        if ($campaign->status !== 'draft') {
+            echo '<div class="notice notice-warning"><p>This campaign has already been sent or is in progress.</p></div>';
+            return;
+        }
+        
+        $recipients = json_decode($campaign->recipients_data, true);
+        
+        ?>
+        <p><a href="?page=alumni-campaign-history">&larr; Back to Campaign Management</a></p>
+        
+        <h2>Review Campaign: <?php echo esc_html($campaign->campaign_name); ?></h2>
+        
+        <div class="postbox">
+            <h3 class="hndle">Campaign Details</h3>
+            <div class="inside">
+                <table class="form-table">
+                    <tr>
+                        <th scope="row">Campaign Name</th>
+                        <td><?php echo esc_html($campaign->campaign_name); ?></td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Subject</th>
+                        <td><?php echo esc_html($campaign->subject); ?></td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Recipients</th>
+                        <td><?php echo number_format($campaign->total_recipients); ?> recipients</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Email Column</th>
+                        <td><?php echo esc_html($campaign->email_column ?: 'email'); ?></td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Created</th>
+                        <td><?php echo date('M j, Y g:i A', strtotime($campaign->created_at)); ?></td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+        
+        <div class="postbox">
+            <h3 class="hndle">Email Content Preview</h3>
+            <div class="inside">
+                <div style="border: 1px solid #ddd; padding: 20px; background: #fff;">
+                    <?php echo wp_kses_post($campaign->content); ?>
+                </div>
+            </div>
+        </div>
+        
+        <div class="postbox">
+            <h3 class="hndle">Recipient Preview (First 10)</h3>
+            <div class="inside">
+                <?php if ($recipients && count($recipients) > 0): ?>
+                    <table class="wp-list-table widefat fixed striped">
+                        <thead>
+                            <tr>
+                                <?php 
+                                $sample_recipient = $recipients[0];
+                                foreach (array_keys($sample_recipient) as $column): ?>
+                                    <th><?php echo esc_html(ucfirst(str_replace('_', ' ', $column))); ?></th>
+                                <?php endforeach; ?>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php 
+                            $preview_count = min(10, count($recipients));
+                            for ($i = 0; $i < $preview_count; $i++): 
+                                $recipient = $recipients[$i];
+                            ?>
+                                <tr>
+                                    <?php foreach ($recipient as $value): ?>
+                                        <td><?php echo esc_html($value); ?></td>
+                                    <?php endforeach; ?>
+                                </tr>
+                            <?php endfor; ?>
+                            
+                            <?php if (count($recipients) > 10): ?>
+                                <tr>
+                                    <td colspan="<?php echo count($sample_recipient); ?>">
+                                        <em>... and <?php echo number_format(count($recipients) - 10); ?> more recipients</em>
+                                    </td>
+                                </tr>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                <?php else: ?>
+                    <p>No recipients found.</p>
+                <?php endif; ?>
+            </div>
+        </div>
+        
+        <div class="postbox">
+            <h3 class="hndle">Send Campaign</h3>
+            <div class="inside">
+                <p>
+                    <strong>Ready to send?</strong> 
+                    <?php if ($campaign->total_recipients > 20): ?>
+                        This campaign will be processed in the background with real-time progress monitoring.
+                    <?php else: ?>
+                        This campaign will be sent immediately.
+                    <?php endif; ?>
+                </p>
+                
+                <p>
+                    <button id="send-campaign-now" class="button button-primary button-large" 
+                            data-campaign-id="<?php echo $campaign->id; ?>">
+                        Send Campaign Now (<?php echo number_format($campaign->total_recipients); ?> recipients)
+                    </button>
+                    <a href="?page=alumni-bulk-email&edit_campaign=<?php echo $campaign->id; ?>" 
+                       class="button button-large" style="margin-left: 10px;">Edit Campaign</a>
+                </p>
+                
+                <div id="send-status" style="margin-top: 10px;"></div>
+            </div>
+        </div>
+        
+        <script type="text/javascript">
+        jQuery(document).ready(function($) {
+            $('#send-campaign-now').click(function() {
+                var button = $(this);
+                var campaignId = button.data('campaign-id');
+                
+                if (!confirm('Are you sure you want to send this campaign? This action cannot be undone.')) {
+                    return;
+                }
+                
+                button.prop('disabled', true).text('Sending...');
+                
+                $.post(ajaxurl, {
+                    action: 'send_campaign_now',
+                    nonce: '<?php echo wp_create_nonce("send_campaign_now"); ?>',
+                    campaign_id: campaignId
+                }).done(function(response) {
+                    if (response.success) {
+                        $('#send-status').html('<div class="notice notice-success"><p>' + response.data.message + '</p></div>');
+                        
+                        if (response.data.redirect_to_status) {
+                            // Redirect to status page for large campaigns
+                            setTimeout(function() {
+                                window.location.href = 'admin.php?page=alumni-campaign-status&campaign_id=' + campaignId;
+                            }, 2000);
+                        } else {
+                            // Hide send button for completed campaigns
+                            button.hide();
+                        }
+                    } else {
+                        $('#send-status').html('<div class="notice notice-error"><p>Error: ' + response.data.message + '</p></div>');
+                        button.prop('disabled', false).text('Send Campaign Now (<?php echo number_format($campaign->total_recipients); ?> recipients)');
+                    }
+                }).fail(function() {
+                    $('#send-status').html('<div class="notice notice-error"><p>Failed to send campaign</p></div>');
+                    button.prop('disabled', false).text('Send Campaign Now (<?php echo number_format($campaign->total_recipients); ?> recipients)');
+                });
+            });
+        });
+        </script>
+        <?php
+    }
+    
+    /**
      * Settings page
      */
     public function settings_page() {
@@ -1295,8 +1597,8 @@ class AlumniBulkEmail {
                     
                     <h4 style="margin-top: 20px;">Campaign Actions</h4>
                     <p>
-                        <button type="button" id="save_campaign" class="button button-secondary">Save Campaign</button>
-                        <button type="submit" id="send_campaign" class="button button-primary">Send Campaign Now</button>
+                        <button type="button" id="save_campaign" class="button button-secondary">Save Draft</button>
+                        <button type="submit" id="send_campaign" class="button button-primary">Create Campaign</button>
                     </p>
                 </div>
             </div>
@@ -1715,7 +2017,7 @@ class AlumniBulkEmail {
             
             function sendCampaign(formData) {
                 
-                $('#send_campaign').prop('disabled', true).text('Sending...');
+                $('#send_campaign').prop('disabled', true).text('Creating...');
                 
                 $.ajax({
                     url: ajaxurl,
@@ -1724,12 +2026,20 @@ class AlumniBulkEmail {
                     processData: false,
                     contentType: false
                 }).done(function(response) {
-                    alert(response.data.message);
                     if (response.success) {
-                        window.location.reload();
+                        alert('Campaign created successfully! ' + response.data.message);
+                        
+                        if (response.data.redirect_to_review) {
+                            // Redirect to review page
+                            window.location.href = 'admin.php?page=alumni-campaign-history&action=review&campaign_id=' + response.data.campaign_id;
+                        } else {
+                            window.location.reload();
+                        }
+                    } else {
+                        alert('Error: ' + response.data.message);
                     }
                 }).always(function() {
-                    $('#send_campaign').prop('disabled', false).text('Send Campaign Now');
+                    $('#send_campaign').prop('disabled', false).text('Create Campaign');
                 });
             }
         });

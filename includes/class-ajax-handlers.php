@@ -69,6 +69,7 @@ class Alumni_Ajax_Handlers {
         add_action('wp_ajax_test_mailgun_connection', array($this, 'handle_test_mailgun_connection'));
         add_action('wp_ajax_update_table_schema', array($this, 'handle_update_table_schema'));
         add_action('wp_ajax_get_campaign_status', array($this, 'handle_get_campaign_status'));
+        add_action('wp_ajax_send_campaign_now', array($this, 'handle_send_campaign_now'));
         
         // Utility handlers
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -243,35 +244,36 @@ class Alumni_Ajax_Handlers {
                 $content = $this->header_footer_manager->apply_templates($content, $header_id, $footer_id);
             }
             
-            // Queue campaign for background processing (for large lists)
-            if (count($recipients) > 20) {
-                $result = $this->campaign_manager->queue_campaign($recipients, $subject, $content, $campaign_name, $email_column);
-                
-                echo json_encode(array(
-                    'success' => true,
-                    'data' => array(
-                        'message' => "Campaign queued! Processing {$result['total_recipients']} recipients in the background.",
-                        'campaign_id' => $result['campaign_id'],
-                        'status' => 'queued',
-                        'total_recipients' => $result['total_recipients'],
-                        'redirect_to_status' => true
-                    )
-                ));
-                
-            } else {
-                // Send immediately for small lists
-                $result = $this->campaign_manager->send_campaign($recipients, $subject, $content, $campaign_name, $email_column);
+            // Create campaign as draft (don't send immediately)
+            $campaign_id = $this->campaign_manager->create_campaign($campaign_name, $subject, $content, count($recipients), $recipients);
             
-                echo json_encode(array(
-                    'success' => true,
-                    'data' => array(
-                        'message' => "Campaign sent! {$result['sent']} emails sent, {$result['failed']} failed.",
-                        'sent' => $result['sent'],
-                        'failed' => $result['failed'],
-                        'campaign_id' => $result['campaign_id']
-                    )
-                ));
-            }
+            // Store additional campaign metadata
+            global $wpdb;
+            $table = Alumni_Database::get_table_name('email_campaigns');
+            $wpdb->update(
+                $table,
+                array(
+                    'email_column' => $email_column,
+                    'batch_size' => 50,
+                    'processed_count' => 0,
+                    'batch_current' => 0,
+                    'status' => 'draft'
+                ),
+                array('id' => $campaign_id),
+                array('%s', '%d', '%d', '%d', '%s'),
+                array('%d')
+            );
+            
+            echo json_encode(array(
+                'success' => true,
+                'data' => array(
+                    'message' => "Campaign created successfully! Review and send when ready.",
+                    'campaign_id' => $campaign_id,
+                    'status' => 'draft',
+                    'total_recipients' => count($recipients),
+                    'redirect_to_review' => true
+                )
+            ));
             
         } catch (Exception $e) {
             echo json_encode(array(
@@ -1587,6 +1589,87 @@ class Alumni_Ajax_Handlers {
                 'success' => true,
                 'data' => $progress
             ));
+            
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Send a draft campaign
+     */
+    public function handle_send_campaign_now() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'send_campaign_now') || !current_user_can('edit_posts')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            $campaign_id = intval($_POST['campaign_id']);
+            if (!$campaign_id) {
+                throw new Exception('Invalid campaign ID');
+            }
+            
+            // Get campaign details
+            global $wpdb;
+            $table = Alumni_Database::get_table_name('email_campaigns');
+            $campaign = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM $table WHERE id = %d",
+                $campaign_id
+            ));
+            
+            if (!$campaign) {
+                throw new Exception('Campaign not found');
+            }
+            
+            if ($campaign->status !== 'draft') {
+                throw new Exception('Campaign has already been sent or is in progress');
+            }
+            
+            // Parse recipients data
+            $recipients = json_decode($campaign->recipients_data, true);
+            if (!$recipients) {
+                throw new Exception('No recipients found in campaign');
+            }
+            
+            // Determine sending method based on recipient count
+            if (count($recipients) > 20) {
+                // Queue for background processing
+                $result = $this->campaign_manager->queue_campaign_by_id($campaign_id);
+                
+                echo json_encode(array(
+                    'success' => true,
+                    'data' => array(
+                        'message' => "Campaign queued! Processing {$campaign->total_recipients} recipients in the background.",
+                        'campaign_id' => $campaign_id,
+                        'status' => 'queued',
+                        'total_recipients' => $campaign->total_recipients,
+                        'redirect_to_status' => true
+                    )
+                ));
+                
+            } else {
+                // Send immediately for small lists
+                $email_column = $campaign->email_column ?: 'email';
+                $result = $this->campaign_manager->send_campaign($recipients, $campaign->subject, $campaign->content, $campaign->campaign_name, $email_column);
+                
+                echo json_encode(array(
+                    'success' => true,
+                    'data' => array(
+                        'message' => "Campaign sent! {$result['sent']} emails sent, {$result['failed']} failed.",
+                        'sent' => $result['sent'],
+                        'failed' => $result['failed'],
+                        'campaign_id' => $result['campaign_id']
+                    )
+                ));
+            }
             
         } catch (Exception $e) {
             echo json_encode(array(

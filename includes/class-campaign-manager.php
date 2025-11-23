@@ -250,6 +250,49 @@ class Alumni_Campaign_Manager {
     }
     
     /**
+     * Queue existing campaign for background processing
+     */
+    public function queue_campaign_by_id($campaign_id) {
+        global $wpdb;
+        $table = Alumni_Database::get_table_name('email_campaigns');
+        
+        // Get campaign details
+        $campaign = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM $table WHERE id = %d",
+            $campaign_id
+        ));
+        
+        if (!$campaign) {
+            throw new Exception('Campaign not found');
+        }
+        
+        if ($campaign->status !== 'draft') {
+            throw new Exception('Campaign is not in draft status');
+        }
+        
+        // Update campaign status to queued
+        $wpdb->update(
+            $table,
+            array(
+                'status' => 'queued',
+                'updated_at' => current_time('mysql')
+            ),
+            array('id' => $campaign_id),
+            array('%s', '%s'),
+            array('%d')
+        );
+        
+        // Schedule first batch for immediate processing
+        wp_schedule_single_event(time() + 10, 'alumni_process_campaign_batch', array($campaign_id));
+        
+        return array(
+            'campaign_id' => $campaign_id,
+            'status' => 'queued',
+            'total_recipients' => $campaign->total_recipients
+        );
+    }
+    
+    /**
      * Send campaign to recipients (legacy synchronous method)
      */
     public function send_campaign($recipients, $subject, $content, $campaign_name, $email_column = 'email') {
