@@ -41,7 +41,31 @@ class Alumni_Campaign_Manager {
         );
         
         if ($result === false) {
-            throw new Exception('Failed to create campaign: ' . $wpdb->last_error);
+            // Check if error is due to missing column and try to fix it
+            if (strpos($wpdb->last_error, "Unknown column 'content'") !== false) {
+                error_log('Alumni Bulk Email - Attempting to fix missing content column');
+                Alumni_Database::update_table_schema();
+                
+                // Retry the insert after schema update
+                $result = $wpdb->insert(
+                    $table,
+                    array(
+                        'campaign_name' => $campaign_name,
+                        'subject' => $subject,
+                        'content' => $content,
+                        'total_recipients' => $recipients_count,
+                        'recipients_data' => $recipients_data ? json_encode($recipients_data) : null,
+                        'status' => 'draft'
+                    ),
+                    array('%s', '%s', '%s', '%d', '%s', '%s')
+                );
+                
+                if ($result === false) {
+                    throw new Exception('Failed to create campaign even after schema update: ' . $wpdb->last_error);
+                }
+            } else {
+                throw new Exception('Failed to create campaign: ' . $wpdb->last_error);
+            }
         }
         
         return $wpdb->insert_id;
@@ -71,7 +95,31 @@ class Alumni_Campaign_Manager {
             );
             
             if ($result === false) {
-                throw new Exception('Failed to update campaign: ' . $wpdb->last_error);
+                // Check if error is due to missing column and try to fix it
+                if (strpos($wpdb->last_error, "Unknown column 'content'") !== false) {
+                    error_log('Alumni Bulk Email - Attempting to fix missing content column for update');
+                    Alumni_Database::update_table_schema();
+                    
+                    // Retry the update after schema update
+                    $result = $wpdb->update(
+                        $table,
+                        array(
+                            'campaign_name' => $campaign_name,
+                            'subject' => $subject,
+                            'content' => $content,
+                            'updated_at' => current_time('mysql')
+                        ),
+                        array('id' => $campaign_id),
+                        array('%s', '%s', '%s', '%s'),
+                        array('%d')
+                    );
+                    
+                    if ($result === false) {
+                        throw new Exception('Failed to update campaign even after schema update: ' . $wpdb->last_error);
+                    }
+                } else {
+                    throw new Exception('Failed to update campaign: ' . $wpdb->last_error);
+                }
             }
             
             return $campaign_id;
