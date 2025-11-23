@@ -1683,6 +1683,10 @@ class AlumniBulkEmail {
                 <p>If you're experiencing database issues, you can recreate the plugin tables:</p>
                 <button type="button" id="recreate-tables" class="button button-secondary">Recreate Database Tables</button>
                 <p class="description"><strong>Warning:</strong> This will not delete existing data, but will ensure all tables exist with the correct structure.</p>
+                
+                <p style="margin-top: 15px;">If you're getting "Unknown column" errors, try updating the table schema:</p>
+                <button type="button" id="update-schema" class="button button-secondary">Update Table Schema</button>
+                <p class="description">This will add any missing columns to existing tables (safe operation).</p>
             </div>
         </div>
         
@@ -1713,6 +1717,24 @@ class AlumniBulkEmail {
                     );
                 }).always(function() {
                     button.prop('disabled', false).text('Test Mailgun Connection');
+                });
+            });
+            
+            $('#update-schema').click(function() {
+                if (!confirm('Are you sure you want to update the table schema? This will add missing columns.')) {
+                    return;
+                }
+                
+                var button = $(this);
+                button.prop('disabled', true).text('Updating...');
+                
+                $.post(ajaxurl, {
+                    action: 'update_table_schema',
+                    nonce: '<?php echo wp_create_nonce('update_table_schema'); ?>'
+                }).done(function(response) {
+                    alert(response.data.message);
+                }).always(function() {
+                    button.prop('disabled', false).text('Update Table Schema');
                 });
             });
             
@@ -1779,6 +1801,7 @@ new AlumniBulkEmail();
 // Activation and deactivation hooks
 register_activation_hook(__FILE__, function() {
     Alumni_Database::create_tables();
+    Alumni_Database::update_table_schema();
     
     // Create default typography presets
     $typography_preset_manager = new Alumni_Typography_Preset_Manager();

@@ -190,6 +190,31 @@ class Alumni_Database {
     }
     
     /**
+     * Update existing tables to match current schema
+     */
+    public static function update_table_schema() {
+        global $wpdb;
+        
+        $campaigns_table = $wpdb->prefix . 'alumni_email_campaigns';
+        
+        // Check if content column exists in campaigns table
+        $columns = $wpdb->get_results("DESCRIBE $campaigns_table");
+        $column_names = array_column($columns, 'Field');
+        
+        if (!in_array('content', $column_names)) {
+            // Add missing content column
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN content longtext NOT NULL AFTER subject");
+            error_log('Alumni Bulk Email - Added missing content column to campaigns table');
+        }
+        
+        // Add other missing columns if needed
+        if (!in_array('status', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN status varchar(50) DEFAULT 'draft'");
+            error_log('Alumni Bulk Email - Added missing status column to campaigns table');
+        }
+    }
+    
+    /**
      * Get database version for migration management
      */
     public static function get_db_version() {

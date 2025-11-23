@@ -67,6 +67,7 @@ class Alumni_Ajax_Handlers {
         add_action('wp_ajax_duplicate_template', array($this, 'handle_duplicate_template'));
         add_action('wp_ajax_save_typography_preset', array($this, 'handle_save_typography_preset'));
         add_action('wp_ajax_test_mailgun_connection', array($this, 'handle_test_mailgun_connection'));
+        add_action('wp_ajax_update_table_schema', array($this, 'handle_update_table_schema'));
         
         // Utility handlers
         add_action('wp_ajax_recreate_tables', array($this, 'handle_recreate_tables'));
@@ -655,9 +656,10 @@ class Alumni_Ajax_Handlers {
         
         try {
             Alumni_Database::create_tables();
+            Alumni_Database::update_table_schema();
             echo json_encode(array(
                 'success' => true,
-                'data' => array('message' => 'Database tables recreated successfully')
+                'data' => array('message' => 'Database tables recreated and schema updated successfully')
             ));
         } catch (Exception $e) {
             echo json_encode(array(
@@ -1507,6 +1509,33 @@ class Alumni_Ajax_Handlers {
             echo json_encode(array(
                 'success' => false,
                 'data' => array('message' => 'Mailgun test failed: ' . $e->getMessage())
+            ));
+        }
+        
+        exit;
+    }
+    
+    /**
+     * Update table schema
+     */
+    public function handle_update_table_schema() {
+        header('Content-Type: application/json');
+        
+        if (!wp_verify_nonce($_POST['nonce'], 'update_table_schema') || !current_user_can('manage_options')) {
+            echo json_encode(array('success' => false, 'data' => array('message' => 'Unauthorized')));
+            exit;
+        }
+        
+        try {
+            Alumni_Database::update_table_schema();
+            echo json_encode(array(
+                'success' => true,
+                'data' => array('message' => 'Table schema updated successfully! Missing columns have been added.')
+            ));
+        } catch (Exception $e) {
+            echo json_encode(array(
+                'success' => false,
+                'data' => array('message' => 'Error updating schema: ' . $e->getMessage())
             ));
         }
         
