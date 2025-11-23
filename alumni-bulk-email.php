@@ -1119,19 +1119,51 @@ class AlumniBulkEmail {
                 var subject = $('#subject').val();
                 var content = '';
                 
-                // Get content from TinyMCE editor
-                if (typeof tinyMCE !== 'undefined' && tinyMCE.get('email_content')) {
-                    content = tinyMCE.get('email_content').getContent();
+                // Get content from the selected method
+                if ($('input[name="content_method"]:checked').val() === 'compose') {
+                    // Get content from TinyMCE editor
+                    if (typeof tinyMCE !== 'undefined' && tinyMCE.get('email_content')) {
+                        content = tinyMCE.get('email_content').getContent();
+                    } else {
+                        // Fallback to textarea if TinyMCE not available
+                        content = $('#email_content').val();
+                    }
                 } else {
-                    content = $('#email_content').val();
+                    // For uploaded HTML files, get the file content
+                    var htmlFile = document.getElementById('html_file');
+                    if (htmlFile && htmlFile.files.length > 0) {
+                        var reader = new FileReader();
+                        reader.onload = function(e) {
+                            content = e.target.result;
+                            saveCampaignWithContent(campaignName, subject, content);
+                        };
+                        reader.readAsText(htmlFile.files[0]);
+                        return; // Exit here, saveCampaignWithContent will be called from FileReader
+                    } else {
+                        alert('Please select an HTML file or switch to compose mode');
+                        return;
+                    }
                 }
                 
+                saveCampaignWithContent(campaignName, subject, content);
+            });
+            
+            function saveCampaignWithContent(campaignName, subject, content) {
+                // Debug logging
+                console.log('Save Campaign Debug:');
+                console.log('Campaign Name:', campaignName);
+                console.log('Subject:', subject);
+                console.log('Content length:', content ? content.length : 0);
+                console.log('Content preview:', content ? content.substring(0, 100) : 'EMPTY');
+                
                 if (!campaignName || !subject || !content) {
-                    alert('Please fill in campaign name, subject, and content before saving');
+                    alert('Please fill in campaign name, subject, and content before saving\n\nDebug info:\nCampaign Name: ' + 
+                          (campaignName || 'EMPTY') + '\nSubject: ' + (subject || 'EMPTY') + 
+                          '\nContent: ' + (content ? content.length + ' characters' : 'EMPTY'));
                     return;
                 }
                 
-                var button = $(this);
+                var button = $('#save_campaign');
                 button.prop('disabled', true).text('Saving...');
                 
                 $.post(ajaxurl, {
@@ -1151,7 +1183,7 @@ class AlumniBulkEmail {
                 }).always(function() {
                     button.prop('disabled', false).text('Save Campaign');
                 });
-            });
+            }
             
             // Load Campaign
             $('#load_campaign').click(function() {
@@ -1204,13 +1236,42 @@ class AlumniBulkEmail {
                     return;
                 }
                 
-                // Sync TinyMCE content before submitting
-                if (typeof tinyMCE !== 'undefined' && tinyMCE.get('email_content')) {
-                    tinyMCE.get('email_content').save();
-                }
+                // Handle content based on method
+                var contentMethod = $('input[name="content_method"]:checked').val();
                 
-                var formData = new FormData(this);
-                formData.append('action', 'send_bulk_email');
+                if (contentMethod === 'compose') {
+                    // Sync TinyMCE content before submitting
+                    if (typeof tinyMCE !== 'undefined' && tinyMCE.get('email_content')) {
+                        tinyMCE.get('email_content').save();
+                    }
+                    
+                    var formData = new FormData(this);
+                    formData.append('action', 'send_bulk_email');
+                    
+                    sendCampaign(formData);
+                    
+                } else {
+                    // For HTML file upload, read file content and add to form data
+                    var htmlFile = document.getElementById('html_file');
+                    if (htmlFile && htmlFile.files.length > 0) {
+                        var reader = new FileReader();
+                        reader.onload = function(e) {
+                            var formData = new FormData($('#bulk-email-form')[0]);
+                            formData.append('action', 'send_bulk_email');
+                            formData.append('content', e.target.result); // Add file content as 'content' field
+                            
+                            sendCampaign(formData);
+                        };
+                        reader.readAsText(htmlFile.files[0]);
+                        return; // Exit here, sendCampaign will be called from FileReader
+                    } else {
+                        alert('Please select an HTML file or switch to compose mode');
+                        return;
+                    }
+                }
+            });
+            
+            function sendCampaign(formData) {
                 
                 $('#send_campaign').prop('disabled', true).text('Sending...');
                 
@@ -1228,7 +1289,7 @@ class AlumniBulkEmail {
                 }).always(function() {
                     $('#send_campaign').prop('disabled', false).text('Send Campaign Now');
                 });
-            });
+            }
         });
         
         // Template preview functions
@@ -1535,7 +1596,7 @@ class AlumniBulkEmail {
                                 <input type="password" id="mailgun_api_key" name="mailgun_api_key" value="<?php echo esc_attr($mailgun_api_key); ?>" class="regular-text" />
                                 <p class="description">
                                     Your Mailgun API key (format: xxxxxxxx-xxxx-xxxx)<br>
-                                    <small>Find this at: <a href="https://app.mailgun.com/settings/api_security" target="_blank">Mailgun Dashboard → Settings → API Security</a></small>
+                                    <small>Find this at: <a href="https://app.mailgun.com/settings/api_security" target="_blank">Mailgun Dashboard → Account Settings → API Security</a></small>
                                 </p>
                             </td>
                         </tr>
