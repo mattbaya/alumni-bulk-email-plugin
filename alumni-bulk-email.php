@@ -1534,8 +1534,8 @@ class AlumniBulkEmail {
                             <td>
                                 <input type="password" id="mailgun_api_key" name="mailgun_api_key" value="<?php echo esc_attr($mailgun_api_key); ?>" class="regular-text" />
                                 <p class="description">
-                                    Your Mailgun <strong>Private API key</strong> (starts with "key-")<br>
-                                    <small>Find this in Mailgun Dashboard → Settings → API Keys → Private API key</small>
+                                    Your Mailgun API key (format: xxxxxxxx-xxxx-xxxx)<br>
+                                    <small>Find this at: <a href="https://app.mailgun.com/settings/api_security" target="_blank">Mailgun Dashboard → Settings → API Security</a></small>
                                 </p>
                             </td>
                         </tr>

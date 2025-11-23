@@ -40,8 +40,8 @@ class Alumni_Email_Service {
         
         if (empty($api_key)) {
             $errors[] = 'Mailgun API key is missing';
-        } elseif (!preg_match('/^key-[a-zA-Z0-9]{32}$/', $api_key)) {
-            $errors[] = 'Mailgun API key format is invalid (should start with "key-" followed by 32 characters)';
+        } elseif (!preg_match('/^[a-f0-9]{32}-[a-f0-9]{8}-[a-f0-9]{8}$/', $api_key)) {
+            $errors[] = 'Mailgun API key format is invalid (should be like: xxxxxxxx-xxxx-xxxx where x is a lowercase letter or number)';
         }
         
         if (empty($domain)) {
@@ -128,7 +128,7 @@ class Alumni_Email_Service {
             // Provide specific guidance for common errors
             $helpful_message = $error_message;
             if ($response_code === 401) {
-                $helpful_message = 'Authentication failed. Check your Mailgun API key and make sure it starts with "key-"';
+                $helpful_message = 'Authentication failed. Please verify your Mailgun API key is correct';
             } elseif ($response_code === 404) {
                 $helpful_message = 'Domain not found. Verify your Mailgun domain name (without http://)';
             } elseif ($response_code === 403) {
