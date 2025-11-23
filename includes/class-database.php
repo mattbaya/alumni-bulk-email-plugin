@@ -197,20 +197,62 @@ class Alumni_Database {
         
         $campaigns_table = $wpdb->prefix . 'alumni_email_campaigns';
         
-        // Check if content column exists in campaigns table
+        // Check if campaigns table exists
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$campaigns_table'");
+        if (!$table_exists) {
+            error_log('Alumni Bulk Email - Campaigns table does not exist, creating it');
+            self::create_tables();
+            return;
+        }
+        
+        // Get current columns
         $columns = $wpdb->get_results("DESCRIBE $campaigns_table");
         $column_names = array_column($columns, 'Field');
         
+        error_log('Alumni Bulk Email - Current campaigns table columns: ' . implode(', ', $column_names));
+        
+        // Add missing columns one by one
+        $missing_columns_added = [];
+        
         if (!in_array('content', $column_names)) {
-            // Add missing content column
             $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN content longtext NOT NULL AFTER subject");
-            error_log('Alumni Bulk Email - Added missing content column to campaigns table');
+            $missing_columns_added[] = 'content';
         }
         
-        // Add other missing columns if needed
+        if (!in_array('recipients_data', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN recipients_data longtext");
+            $missing_columns_added[] = 'recipients_data';
+        }
+        
+        if (!in_array('sent_at', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN sent_at datetime");
+            $missing_columns_added[] = 'sent_at';
+        }
+        
+        if (!in_array('total_recipients', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN total_recipients int DEFAULT 0");
+            $missing_columns_added[] = 'total_recipients';
+        }
+        
         if (!in_array('status', $column_names)) {
             $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN status varchar(50) DEFAULT 'draft'");
-            error_log('Alumni Bulk Email - Added missing status column to campaigns table');
+            $missing_columns_added[] = 'status';
+        }
+        
+        if (!in_array('created_at', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN created_at datetime DEFAULT CURRENT_TIMESTAMP");
+            $missing_columns_added[] = 'created_at';
+        }
+        
+        if (!in_array('updated_at', $column_names)) {
+            $wpdb->query("ALTER TABLE $campaigns_table ADD COLUMN updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+            $missing_columns_added[] = 'updated_at';
+        }
+        
+        if (!empty($missing_columns_added)) {
+            error_log('Alumni Bulk Email - Added missing columns to campaigns table: ' . implode(', ', $missing_columns_added));
+        } else {
+            error_log('Alumni Bulk Email - All required columns already exist in campaigns table');
         }
     }
     

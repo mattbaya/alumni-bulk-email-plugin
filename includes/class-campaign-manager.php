@@ -42,8 +42,8 @@ class Alumni_Campaign_Manager {
         
         if ($result === false) {
             // Check if error is due to missing column and try to fix it
-            if (strpos($wpdb->last_error, "Unknown column 'content'") !== false) {
-                error_log('Alumni Bulk Email - Attempting to fix missing content column');
+            if (strpos($wpdb->last_error, "Unknown column") !== false) {
+                error_log('Alumni Bulk Email - Attempting to fix missing columns in campaigns table');
                 Alumni_Database::update_table_schema();
                 
                 // Retry the insert after schema update
@@ -96,8 +96,8 @@ class Alumni_Campaign_Manager {
             
             if ($result === false) {
                 // Check if error is due to missing column and try to fix it
-                if (strpos($wpdb->last_error, "Unknown column 'content'") !== false) {
-                    error_log('Alumni Bulk Email - Attempting to fix missing content column for update');
+                if (strpos($wpdb->last_error, "Unknown column") !== false) {
+                    error_log('Alumni Bulk Email - Attempting to fix missing columns in campaigns table for update');
                     Alumni_Database::update_table_schema();
                     
                     // Retry the update after schema update
