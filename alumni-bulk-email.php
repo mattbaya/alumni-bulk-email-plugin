@@ -1215,12 +1215,66 @@ class AlumniBulkEmail {
             </div>
         </div>
         
+        <?php
+        // Generate complete email preview
+        $file_processor = new Alumni_File_Processor();
+        $email_service = new Alumni_Email_Service($file_processor);
+        $list_manager = new Alumni_List_Manager();
+        $campaign_manager = new Alumni_Campaign_Manager($email_service, $list_manager);
+        
+        $email_preview = $campaign_manager->generate_email_preview($campaign_id);
+        ?>
+        
         <div class="postbox">
-            <h3 class="hndle">Email Content Preview</h3>
+            <h3 class="hndle">Email Preview - As Recipients Will See It</h3>
             <div class="inside">
-                <div style="border: 1px solid #ddd; padding: 20px; background: #fff;">
-                    <?php echo wp_kses_post($campaign->content); ?>
-                </div>
+                <?php if ($email_preview): ?>
+                    <div style="margin-bottom: 15px;">
+                        <strong>Preview using recipient:</strong> 
+                        <?php 
+                        $sample_recipient = $email_preview['recipient'];
+                        echo esc_html($sample_recipient['name'] ?? $sample_recipient['email'] ?? 'Sample User');
+                        ?>
+                        <span style="color: #666; font-size: 12px;">
+                            (<?php echo esc_html($sample_recipient['email'] ?? 'user@example.com'); ?>)
+                        </span>
+                    </div>
+                    
+                    <div style="border: 1px solid #ddd; background: #fff;">
+                        <!-- Email Subject Line -->
+                        <div style="background: #f8f9fa; padding: 15px; border-bottom: 1px solid #ddd;">
+                            <strong>Subject:</strong> <?php echo esc_html($email_preview['subject']); ?>
+                        </div>
+                        
+                        <!-- Email Content with Headers, Footers, and Unsubscribe -->
+                        <div style="padding: 20px; min-height: 400px; max-height: 600px; overflow-y: auto;">
+                            <?php echo $email_preview['content']; ?>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 10px; padding: 10px; background: #e8f5e8; border: 1px solid #c3e6c3; border-radius: 3px;">
+                        <small>
+                            <strong>✓ Complete Preview:</strong> This shows the email exactly as recipients will receive it, including:
+                            headers, footers, personalized content, and the unsubscribe link.
+                        </small>
+                    </div>
+                <?php else: ?>
+                    <div class="notice notice-error">
+                        <p>Unable to generate email preview. Please check that the campaign has valid content and recipients.</p>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+        
+        <div class="postbox">
+            <h3 class="hndle">Raw Campaign Content</h3>
+            <div class="inside">
+                <details style="margin-bottom: 10px;">
+                    <summary style="cursor: pointer; padding: 5px; background: #f5f5f5;">Show original content (before headers/footers)</summary>
+                    <div style="border: 1px solid #ddd; padding: 15px; margin-top: 10px; background: #fff;">
+                        <?php echo wp_kses_post($campaign->content); ?>
+                    </div>
+                </details>
             </div>
         </div>
         

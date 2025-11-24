@@ -495,6 +495,48 @@ class Alumni_Campaign_Manager {
     }
     
     /**
+     * Generate complete email preview with headers, footers, and unsubscribe link
+     */
+    public function generate_email_preview($campaign_id, $sample_recipient = null) {
+        global $wpdb;
+        $table = Alumni_Database::get_table_name('email_campaigns');
+        
+        // Get campaign details
+        $campaign = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM $table WHERE id = %d",
+            $campaign_id
+        ));
+        
+        if (!$campaign) {
+            return false;
+        }
+        
+        // Get recipients for sample data
+        $recipients = json_decode($campaign->recipients_data, true);
+        if (!$recipients || empty($recipients)) {
+            return false;
+        }
+        
+        // Use provided sample recipient or first recipient
+        $recipient = $sample_recipient ?: $recipients[0];
+        
+        // The campaign content already has headers/footers applied during creation
+        // We just need to personalize it and ensure unsubscribe link is present
+        $personalized_content = $this->email_service->personalize_content($campaign->content, $recipient);
+        
+        // Always ensure unsubscribe link is present
+        // This will add it if not already there, or leave it if already present
+        $final_content = $this->email_service->add_unsubscribe_link($personalized_content, $recipient['email'] ?? 'user@example.com');
+        
+        return array(
+            'content' => $final_content,
+            'subject' => $this->email_service->personalize_content($campaign->subject, $recipient),
+            'recipient' => $recipient,
+            'campaign' => $campaign
+        );
+    }
+    
+    /**
      * Send test email
      */
     public function send_test_email($test_email, $subject, $content) {

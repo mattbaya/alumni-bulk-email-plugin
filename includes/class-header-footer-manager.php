@@ -223,6 +223,19 @@ class Alumni_Header_Footer_Manager {
             }
         }
         
+        // Ensure unsubscribe link placeholder is in footer content
+        if ($footer_content && strpos($footer_content, '{unsubscribe_url}') === false) {
+            // If footer doesn't have unsubscribe placeholder, add it
+            $footer_content .= "\n\n" . '<hr><p style="font-size: 12px; color: #888; text-align: center;">' .
+                               '<a href="{unsubscribe_url}">Unsubscribe from these emails</a></p>';
+        }
+        
+        // If no footer at all, create a simple unsubscribe footer
+        if (empty($footer_content)) {
+            $footer_content = '<hr><p style="font-size: 12px; color: #888; text-align: center;">' .
+                              '<a href="{unsubscribe_url}">Unsubscribe from these emails</a></p>';
+        }
+        
         // Combine header + content + footer
         return $header_content . "\n\n" . $content . "\n\n" . $footer_content;
     }

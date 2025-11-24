@@ -1298,6 +1298,13 @@ class Alumni_Ajax_Handlers {
                 throw new Exception('Name, type, and content are required');
             }
             
+            // For footer templates, ensure unsubscribe link placeholder is included
+            if ($type === 'footer' && strpos($content, '{unsubscribe_url}') === false) {
+                // Add unsubscribe link to footer content if not already present
+                $content .= "\n\n" . '<hr><p style="font-size: 12px; color: #888; text-align: center;">' .
+                           '<a href="{unsubscribe_url}">Unsubscribe from these emails</a></p>';
+            }
+            
             $template_id = $this->header_footer_manager->save_template($name, $type, $content, $is_default, $id);
             
             echo json_encode(array(
